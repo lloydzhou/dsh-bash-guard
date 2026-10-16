@@ -3,6 +3,7 @@
 <p align="center">4 个范围 × 3 种权限。12 个开关，一个原生菜单。</p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/dsh-bash-guard"><img alt="npm version" src="https://img.shields.io/npm/v/dsh-bash-guard"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="DSH Web plugin" src="https://img.shields.io/badge/DSH-Web_plugin-555">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-policy_classifier-3178C6?logo=typescript&logoColor=white">
@@ -32,9 +33,34 @@
 
 ## 快速开始
 
-### 从源码安装
+### 从 npm 安装（推荐）
 
-需要 Git、Node.js / npm，以及支持插件的 DSH。当前版本针对 DSH Web 集成验证，尚未声明跨宿主版本兼容。
+需要 DSH `0.2.0-rc.2` 或更新版本；兼容范围说明见下文。插件安装到 DSH 的 `web` profile，无需全局安装 npm 包，也无需克隆或手动构建。
+
+```bash
+dsh plugin --profile web add dsh-bash-guard
+dsh --profile web
+```
+
+安装后重新启动对应的 DSH Web 实例，在权限菜单中选择 **bash-guard 自定义**。
+
+[npm 包页面](https://www.npmjs.com/package/dsh-bash-guard) · 当前发布版本：`0.1.0`
+
+升级到最新发布版本：
+
+```bash
+dsh plugin --profile web add dsh-bash-guard@latest
+```
+
+如果 npm 镜像尚未同步新版本，可以显式使用官方 registry：
+
+```bash
+dsh plugin --profile web add dsh-bash-guard@latest --registry=https://registry.npmjs.org
+```
+
+### 从源码安装（开发者）
+
+需要 Git、Node.js / npm，以及上述版本的 DSH。
 
 ```bash
 git clone https://github.com/lloydzhou/dsh-bash-guard.git
@@ -49,10 +75,6 @@ dsh --profile web
 在输入框附近打开权限菜单，选择 **bash-guard 自定义**。
 
 目录安装采用链接。更新插件后重新构建；宿主入口或插件配置变化时，重启对应的 DSH 实例。
-
-### npm 发布状态
-
-包名为 `dsh-bash-guard`。本仓库已准备 npm 打包配置，但本说明不表示该包已经发布；发布前请使用上面的源码安装方式。
 
 ## 在菜单中操作
 
