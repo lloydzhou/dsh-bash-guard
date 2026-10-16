@@ -2,7 +2,7 @@ import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { allows, classifyTool } from './classify.ts'
 
 export const name = 'bash-guard'
-export const inject = ['storageDomain', 'sessions', 'permissionPresets']
+export const inject = ['storageDomain', 'sessions', 'permissionPresets', 'sandboxPolicy', 'approval']
 export const BASH_GUARD_DENIED = 'BASH_GUARD_DENIED'
 const BASELINE = 'danger-full-access'
 const valid = (value: unknown): value is string => typeof value === 'string' && /^[0-7]{4}$(?![\s\S])/.test(value)
@@ -58,6 +58,10 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     if (typeof id !== 'string' || !id.trim()) throw new Error('A session ID is required')
     return id
   }
+  const baselineEffective = (session: any): boolean =>
+    ctx.permissionPresets.current(session) === BASELINE &&
+    ctx.sandboxPolicy.resolve({ session }).mode === BASELINE &&
+    ctx.approval.effectivePolicy(session) === 'never'
   const read = (id: string, session = ctx.sessions.get(sessionId(id))): GuardRecord => {
     const stored = records.get(id)
     const state = stored === undefined ? { mode: fallback, active: false, revision: 0, presetSeq: -1 } : recordSchema.parse(stored)
@@ -65,7 +69,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     // unbound session cannot establish that its saved baseline still applies.
     if (!session) return state.active ? { ...state, active: false, revision: state.revision + 1 } : state
     const boundary = presetBoundary(session)
-    return state.active && (boundary > state.presetSeq || ctx.permissionPresets.current(session) !== BASELINE)
+    return state.active && (boundary > state.presetSeq || !baselineEffective(session))
       ? { ...state, active: false, revision: state.revision + 1, presetSeq: boundary }
       : state
   }
@@ -88,6 +92,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     if (request.action === 'activate') {
       const baseline = ctx.permissionPresets.resolve(BASELINE)
       if (baseline.sandbox !== BASELINE) throw new Error('Full-access baseline must use danger-full-access sandbox')
+      if (baseline.approval !== 'never') throw new Error('Bash Guard requires Full access with approval=never; the configured preset still requests approval')
       previousPreset = ctx.permissionPresets.current(session)
       // A custom/unavailable baseline cannot be restored through the preset API.
       // Refuse before elevating instead of risking an unguarded full-access session.
@@ -98,7 +103,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       if (previousPreset !== undefined) {
         // Canonical native setters; never recursively execute a session command.
         ctx.permissionPresets.set(session, BASELINE)
-        if (ctx.permissionPresets.current(session) !== BASELINE) throw new Error('Cannot activate danger-full-access baseline')
+        if (!baselineEffective(session)) throw new Error('Cannot activate danger-full-access baseline with effective approval=never')
       }
       const next = recordSchema.parse({
         mode: request.action === 'mode' ? request.mode : state.mode,

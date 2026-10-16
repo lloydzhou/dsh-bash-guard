@@ -25,9 +25,11 @@ async function mount(records = new Map<string, any>()) {
       if (!['workspace-write', 'danger-full-access', 'read-only'].includes(name)) throw new Error('Unknown native preset')
       return { sandbox: name, approval: name === 'danger-full-access' ? 'never' : 'ask' }
     },
-    set: (bound: any, preset: string) => { expect(bound).toBe(live); selections++; append('permission/preset', { preset }); append('sandbox/mode', { mode: preset }); append('approval/policy', { policy: 'ask' }) },
+    set: (bound: any, preset: string) => { expect(bound).toBe(live); selections++; append('permission/preset', { preset }); append('sandbox/mode', { mode: preset }); append('approval/policy', { policy: preset === 'danger-full-access' ? 'never' : 'ask' }) },
     current: () => [...session.events].reverse().find(event => event.type === 'permission/preset')?.data.preset ?? 'workspace-write',
   })
+  ctx.provide('sandboxPolicy', { resolve: ({session: bound}: any) => ({mode: [...bound.events].reverse().find(event=>event.type==='sandbox/mode')?.data.mode ?? 'workspace-write'}) })
+  ctx.provide('approval', { effectivePolicy: (bound: any) => [...bound.events].reverse().find(event=>event.type==='approval/policy')?.data.policy ?? 'ask' })
   await apply(ctx)
   const get = () => ctx.bashGuard.get(session.id)
   const update = (request: any) => ctx.bashGuard.update(session.id, request)
@@ -41,6 +43,20 @@ async function mount(records = new Map<string, any>()) {
 }
 
 describe('plugin Remote service, persistence and native baseline', () => {
+  it('rejects Full access presets that still ask for approval', async () => {
+    const h = await mount()
+    h.ctx.permissionPresets.resolve = (name: string) => ({sandbox:name,approval:'ask'})
+    await expect(h.update({action:'activate',revision:0})).rejects.toThrow('approval=never')
+    expect(h.counts().selections).toBe(0)
+  })
+  it.each(['sandbox','approval'])('checks effective %s rather than trusting preset identity', async field => {
+    const h = await mount()
+    if(field==='sandbox') h.ctx.sandboxPolicy.resolve=()=>({mode:'workspace-write'})
+    else h.ctx.approval.effectivePolicy=()=> 'ask'
+    await expect(h.update({action:'activate',revision:0})).rejects.toThrow('effective approval=never')
+    expect(h.get().active).toBe(false)
+    expect(h.ctx.permissionPresets.current(h.session)).toBe('workspace-write')
+  })
   it('publishes a real Cordis Remote get/update pair, without any commands dependency', async () => {
     const h = await mount()
     expect(h.ctx.bashGuard.typertRemote).toMatchObject({ serviceKey: 'bashGuard', namespace: 'bashGuard' })
