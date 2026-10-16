@@ -5,6 +5,10 @@
 .dsh-bg-trigger:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
 .dsh-bg-trigger-icon { flex: none; display: inline-flex; }
 .dsh-bg-trigger-icon svg { width: 14px; height: 14px; }
+.dsh-bg-guard-icon { position: relative; display: inline-flex; width: 16px; height: 16px; flex: none; }
+.dsh-bg-guard-icon > svg { width: 100%; height: 100%; }
+.dsh-bg-guard-marks { position: absolute; inset: 0; pointer-events: none; }
+.dsh-bg-trigger-icon .dsh-bg-guard-icon { width: 14px; height: 14px; }
 .dsh-bg-trigger-label { text-overflow: ellipsis; white-space: nowrap; min-width: 0; overflow: hidden; }
 .dsh-bg-option-label { align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; display: inline-flex; }
 .dsh-bg-badge { color: var(--dsw-alias-label-tertiary); letter-spacing: .2px; flex: none; align-self: flex-start; margin-top: -1px; font-size: 8px; font-weight: 600; line-height: 10px; }

@@ -53,7 +53,14 @@ export function createPermissionControl(React, primitives) {
   const h = React.createElement
   const { Menu, RiskConfirmation, PermissionIconReadOnlyRegular, PermissionIconWorkspaceWriteRegular,
     PermissionIconFullAccessRegular, IconChevronDownOutlineRegular, IconShieldOutlineRegular } = primitives
-  const icons = { 'read-only': PermissionIconReadOnlyRegular, 'workspace-write': PermissionIconWorkspaceWriteRegular, 'danger-full-access': PermissionIconFullAccessRegular, 'bash-guard': IconShieldOutlineRegular }
+  // Keep the host shield artwork; only the inner adjustment marks are plugin-owned.
+  function GuardPermissionIcon() {
+    return h('span', { className: 'dsh-bg-guard-icon', 'aria-hidden': true },
+      h(IconShieldOutlineRegular),
+      h('svg', { className: 'dsh-bg-guard-marks', viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1 },
+        h('path', { d: 'M5 6.5h6M5 9.5h6M7 5.5v2M9.5 8.5v2', strokeLinecap: 'round' })))
+  }
+  const icons = { 'read-only': PermissionIconReadOnlyRegular, 'workspace-write': PermissionIconWorkspaceWriteRegular, 'danger-full-access': PermissionIconFullAccessRegular, 'bash-guard': GuardPermissionIcon }
   const GuardEditor = createGuardEditor(React, primitives.IconCheckOutlineRegular)
   return function PermissionControl({ sessionId, transport, locked, useProjection, t = defaultT }) {
     const selection = useProjection('permissions')
