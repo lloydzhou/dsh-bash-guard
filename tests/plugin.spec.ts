@@ -21,9 +21,12 @@ async function mount(records = new Map<string, any>()) {
   }), close() {} }) })
   ctx.provide('sessions', { get: (id: string) => id === session.id ? live : undefined })
   ctx.provide('permissionPresets', {
-    resolve: (name: string) => { expect(name).toBe('workspace-write'); return { sandbox: 'workspace-write', approval: 'ask' } },
+    resolve: (name: string) => {
+      if (!['workspace-write', 'danger-full-access', 'read-only'].includes(name)) throw new Error('Unknown native preset')
+      return { sandbox: name, approval: name === 'danger-full-access' ? 'never' : 'ask' }
+    },
     set: (bound: any, preset: string) => { expect(bound).toBe(live); selections++; append('permission/preset', { preset }); append('sandbox/mode', { mode: preset }); append('approval/policy', { policy: 'ask' }) },
-    current: () => [...session.events].reverse().find(event => event.type === 'permission/preset')?.data.preset,
+    current: () => [...session.events].reverse().find(event => event.type === 'permission/preset')?.data.preset ?? 'workspace-write',
   })
   await apply(ctx)
   const get = () => ctx.bashGuard.get(session.id)
@@ -53,12 +56,12 @@ describe('plugin Remote service, persistence and native baseline', () => {
     expect(h.get()).toMatchObject({ active: false, revision: 0 })
     expect(h.counts()).toEqual({ puts: 0, selections: 0 })
   })
-  it('is inactive by default; activation pins workspace baseline and enforces guard', async () => {
+  it('is inactive by default; activation pins full-access baseline and enforces guard', async () => {
     const h = await mount(); let executed = 0
     const next = async () => { executed++; return { isError: false } }
     expect((await h.run('cat /etc/hosts', next)).isError).toBe(false)
     expect(await h.update({ action: 'activate', revision: 0 })).toMatchObject({ active: true, revision: 1 })
-    expect(h.session.events[0].data.preset).toBe('workspace-write')
+    expect(h.session.events[0].data.preset).toBe('danger-full-access')
     expect(await h.run('touch /etc/bash-guard-test', next)).toMatchObject({ isError: true, error: { info: { code: 'BASH_GUARD_DENIED' } } })
     expect(executed).toBe(1)
     await h.update({ action: 'mode', mode: '4467', revision: 1 })
@@ -90,7 +93,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
   it('invalidates on successful same-preset native command too', async () => {
     const h = await mount()
     await h.update({ action: 'activate', revision: 0 })
-    h.append('command/run', { name: 'permission', args: 'workspace-write', commandId: 'native' })
+    h.append('command/run', { name: 'permission', args: 'danger-full-access', commandId: 'native' })
     h.append('command/done', { kind: 'success', commandId: 'native' })
     expect(h.get()).toMatchObject({ active: false, revision: 2 })
   })
@@ -111,6 +114,106 @@ describe('plugin Remote service, persistence and native baseline', () => {
     expect(h.get()).toMatchObject({ mode: '4667', active: false })
     await expect(h.update({ action: 'deactivate', revision: h.get().revision })).rejects.toThrow('not live')
     expect(h.counts()).toEqual({ puts: 1, selections: 1 })
+  })
+  it('invalidates legacy workspace-write records on read without elevating or writing', async () => {
+    const records = new Map([['test-session', { mode: '4444', active: true, revision: 5, presetSeq: -1 }]])
+    const h = await mount(records)
+    expect(h.get()).toMatchObject({ active: false, mode: '4444', revision: 6 })
+    expect(h.get().revision).toBe(6)
+    expect(h.counts()).toEqual({ puts: 0, selections: 0 })
+    expect(h.session.events).toEqual([])
+    await expect(h.update({ action: 'mode', mode: '7777', revision: 5 })).rejects.toThrow('changed')
+    expect(await h.update({ action: 'activate', revision: 6 })).toMatchObject({ active: true, revision: 7 })
+  })
+  it('invalidates a current preset mismatch even without newer events', async () => {
+    const h = await mount()
+    await h.update({ action: 'activate', revision: 0 })
+    h.ctx.permissionPresets.current = () => 'custom'
+    expect(h.get()).toMatchObject({ active: false, revision: 2 })
+    expect(h.counts()).toEqual({ puts: 1, selections: 1 })
+  })
+  it('validates the full-access sandbox before making native changes', async () => {
+    const h = await mount()
+    h.ctx.permissionPresets.resolve = () => ({ sandbox: 'workspace-write', approval: 'never' })
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('danger-full-access sandbox')
+    expect(h.counts()).toEqual({ puts: 0, selections: 0 })
+  })
+  it.each(['custom', undefined, 'unavailable'])('refuses an unrestorable previous preset %s before elevation', async (preset) => {
+    const h = await mount()
+    h.ctx.permissionPresets.current = () => preset
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow()
+    expect(h.counts()).toEqual({ puts: 0, selections: 0 })
+  })
+  it('rolls back the previous native preset if activation persistence fails, then permits retry', async () => {
+    const h = await mount()
+    h.append('permission/preset', { preset: 'read-only' })
+    h.delayPut(async () => { throw new Error('disk full') })
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('disk full')
+    expect(h.ctx.permissionPresets.current(h.session)).toBe('read-only')
+    expect(h.get()).toMatchObject({ active: false, revision: 0 })
+    expect(h.counts()).toEqual({ puts: 0, selections: 2 })
+    h.delayPut(async () => {})
+    expect(await h.update({ action: 'activate', revision: 0 })).toMatchObject({ active: true, revision: 1 })
+  })
+  it('reports rollback failure explicitly instead of silently leaving full access', async () => {
+    const h = await mount()
+    const set = h.ctx.permissionPresets.set
+    h.ctx.permissionPresets.set = (session: any, preset: string) => {
+      if (preset === 'workspace-write') throw new Error('rollback unavailable')
+      set(session, preset)
+    }
+    h.delayPut(async () => { throw new Error('disk full') })
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('full access may remain enabled')
+    expect(h.get()).toMatchObject({ active: false, revision: 0 })
+  })
+  it('rolls back when setting the full-access baseline fails partway through', async () => {
+    const h = await mount()
+    const set = h.ctx.permissionPresets.set
+    h.ctx.permissionPresets.set = (session: any, preset: string) => {
+      set(session, preset)
+      if (preset === 'danger-full-access') throw new Error('native set failed')
+    }
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('native set failed')
+    expect(h.ctx.permissionPresets.current(h.session)).toBe('workspace-write')
+    expect(h.counts()).toEqual({ puts: 0, selections: 2 })
+  })
+  it('requires the native current preset to confirm activation', async () => {
+    const h = await mount()
+    h.ctx.permissionPresets.current = () => 'workspace-write'
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('Cannot activate danger-full-access baseline')
+    expect(h.counts()).toEqual({ puts: 0, selections: 2 })
+  })
+  it('reports rollback that silently fails to restore the previous preset', async () => {
+    const h = await mount()
+    const set = h.ctx.permissionPresets.set
+    h.ctx.permissionPresets.set = (session: any, preset: string) => {
+      if (preset !== 'workspace-write') set(session, preset)
+    }
+    h.delayPut(async () => { throw new Error('disk full') })
+    await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('native preset rollback failed')
+  })
+  it('preserves invalidation if native permissions change during activation persistence', async () => {
+    const h = await mount()
+    h.delayPut(async () => { h.append('permission/preset', { preset: 'read-only' }) })
+    expect(await h.update({ action: 'activate', revision: 0 })).toMatchObject({ active: false, revision: 2 })
+    await expect(h.update({ action: 'mode', mode: '7777', revision: 1 })).rejects.toThrow('changed')
+    expect(h.ctx.permissionPresets.current(h.session)).toBe('read-only')
+  })
+  it('keeps tools queued until failed activation has restored native permissions', async () => {
+    const h = await mount()
+    let release!: () => void, entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    h.delayPut(() => { entered(); return new Promise<void>((_, reject) => { release = () => reject(new Error('disk full')) }) })
+    const update = h.update({ action: 'activate', revision: 0 })
+    await started
+    let executed = false
+    const execution = h.run('cat /etc/hosts', async () => { executed = true })
+    const failedUpdate = expect(update).rejects.toThrow('disk full')
+    const failedExecution = expect(execution).rejects.toThrow('disk full')
+    release()
+    await Promise.all([failedUpdate, failedExecution])
+    expect(executed).toBe(false)
+    expect(h.ctx.permissionPresets.current(h.session)).toBe('workspace-write')
   })
   it('serializes concurrent revisions and tools wait for persisted policy', async () => {
     const h = await mount()

@@ -107,7 +107,7 @@ export function createPermissionControl(React, primitives) {
     // No polling: refresh on opening and on authoritative permission projection changes.
     React.useEffect(() => { read(); if (open) readCatalog() }, [open, sessionId, selection])
     React.useEffect(() => {
-      if (locked || (confirmation !== null && catalog !== null && !catalog.options.some(option => option.value === confirmation))) {
+      if (locked || (confirmation !== null && confirmation !== 'bash-guard' && catalog !== null && !catalog.options.some(option => option.value === confirmation))) {
         setOpen(false); setConfirmation(null); setAcknowledged(false)
       }
     }, [locked, catalog, confirmation])
@@ -143,7 +143,10 @@ export function createPermissionControl(React, primitives) {
     }
     const choose = id => {
       if (locked || picking) return
-      if (id === 'bash-guard') { if (!pending && !state?.active) submit('activate'); return }
+      if (id === 'bash-guard') {
+        if (!pending && state && !state.active) { setOpen(false); setAcknowledged(false); setConfirmation('bash-guard') }
+        return
+      }
       if (!catalog?.options.some(option => option.value === id)) return
       setOpen(false)
       if (id === selection?.currentValue && !state?.active) return
@@ -170,7 +173,7 @@ export function createPermissionControl(React, primitives) {
       label: h('span', null, t('guard.custom'), state && h('span', { className: 'dsh-bg-mode' }, ` ${state.mode}`)),
     })
     const closeConfirmation = () => { setConfirmation(null); setAcknowledged(false) }
-    const riskPrefix = confirmation === 'auto' ? 'auto.confirm.' : 'confirm.'
+    const riskPrefix = confirmation === 'bash-guard' ? 'guard.confirm.' : confirmation === 'auto' ? 'auto.confirm.' : 'confirm.'
     return h(React.Fragment, null,
       h(Menu, { open, items, selectedId: current, onSelect: choose, onClose: () => setOpen(false), side: 'top', portal: true,
         anchor: h('button', { type: 'button', className: 'dsh-bg-trigger', disabled: !!locked || picking || confirmation !== null,
@@ -188,7 +191,11 @@ export function createPermissionControl(React, primitives) {
       confirmation !== null && h(RiskConfirmation, { open: true, title: t(`${riskPrefix}title`), description: t(`${riskPrefix}description`),
         acknowledgeLabel: t(`${riskPrefix}acknowledge`), cancelLabel: t('confirm.cancel'), closeLabel: t('close'), confirmLabel: t(`${riskPrefix}enable`),
         acknowledged, disabled: !!locked || picking, onAcknowledgedChange: setAcknowledged, onCancel: closeConfirmation,
-        onConfirm: () => { if (!acknowledged || locked || picking) return; const id = confirmation; closeConfirmation(); selectPreset(id) },
+        onConfirm: () => {
+          if (!acknowledged || locked || picking || pending) return
+          const id = confirmation; closeConfirmation()
+          if (id === 'bash-guard') { setOpen(true); submit('activate') } else selectPreset(id)
+        },
       }))
   }
 }

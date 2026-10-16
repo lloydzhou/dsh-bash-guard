@@ -4,6 +4,7 @@ import { allows, classifyTool } from './classify.ts'
 export const name = 'bash-guard'
 export const inject = ['storageDomain', 'sessions', 'permissionPresets']
 export const BASH_GUARD_DENIED = 'BASH_GUARD_DENIED'
+const BASELINE = 'danger-full-access'
 const valid = (value: unknown): value is string => typeof value === 'string' && /^[0-7]{4}$(?![\s\S])/.test(value)
 export interface GuardRecord { mode: string; active: boolean; revision: number; presetSeq: number }
 export interface GuardUpdate { action: 'activate' | 'mode' | 'deactivate'; mode?: string; revision: number }
@@ -64,7 +65,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     // unbound session cannot establish that its saved baseline still applies.
     if (!session) return state.active ? { ...state, active: false, revision: state.revision + 1 } : state
     const boundary = presetBoundary(session)
-    return state.active && boundary > state.presetSeq
+    return state.active && (boundary > state.presetSeq || ctx.permissionPresets.current(session) !== BASELINE)
       ? { ...state, active: false, revision: state.revision + 1, presetSeq: boundary }
       : state
   }
@@ -83,20 +84,39 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     if (!Number.isSafeInteger(request.revision) || request.revision !== state.revision) throw new Error('Guard configuration changed; reopen the permission menu')
     if (state.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Guard revision exhausted')
     if (request.action === 'mode' && (!state.active || !valid(request.mode))) throw new Error('An active guard and four octal digits are required')
+    let previousPreset: string | undefined
     if (request.action === 'activate') {
-      // Installed permissionPresets.set uses canonical sandbox/approval setters.
-      // Never recursively execute a command against an already-running handler.
-      const baseline = ctx.permissionPresets.resolve('workspace-write')
-      if (baseline.sandbox !== 'workspace-write') throw new Error('Workspace baseline must confine writes to the workspace')
-      ctx.permissionPresets.set(session, 'workspace-write')
-      if (ctx.permissionPresets.current(session) !== 'workspace-write') throw new Error('Cannot activate workspace-write baseline')
+      const baseline = ctx.permissionPresets.resolve(BASELINE)
+      if (baseline.sandbox !== BASELINE) throw new Error('Full-access baseline must use danger-full-access sandbox')
+      previousPreset = ctx.permissionPresets.current(session)
+      // A custom/unavailable baseline cannot be restored through the preset API.
+      // Refuse before elevating instead of risking an unguarded full-access session.
+      if (!previousPreset || previousPreset === 'custom') throw new Error('Cannot activate Bash Guard without a restorable native preset')
+      ctx.permissionPresets.resolve(previousPreset)
     }
-    const next = recordSchema.parse({
-      mode: request.action === 'mode' ? request.mode : state.mode,
-      active: request.action !== 'deactivate', revision: state.revision + 1,
-      presetSeq: presetBoundary(session),
-    })
-    await records.put(id, next)
+    try {
+      if (previousPreset !== undefined) {
+        // Canonical native setters; never recursively execute a session command.
+        ctx.permissionPresets.set(session, BASELINE)
+        if (ctx.permissionPresets.current(session) !== BASELINE) throw new Error('Cannot activate danger-full-access baseline')
+      }
+      const next = recordSchema.parse({
+        mode: request.action === 'mode' ? request.mode : state.mode,
+        active: request.action !== 'deactivate', revision: state.revision + 1,
+        presetSeq: presetBoundary(session),
+      })
+      await records.put(id, next)
+    } catch (error) {
+      if (previousPreset !== undefined) {
+        try {
+          ctx.permissionPresets.set(session, previousPreset)
+          if (ctx.permissionPresets.current(session) !== previousPreset) throw new Error('Native preset restoration did not take effect')
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Bash Guard activation failed and native preset rollback failed; full access may remain enabled. Restore native permissions immediately.')
+        }
+      }
+      throw error
+    }
     return read(id)
   }))
   ctx.on('tools/execute', async (exec: any, next: () => Promise<any>) => {
