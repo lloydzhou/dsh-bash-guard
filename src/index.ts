@@ -1,4 +1,4 @@
-import { Remote, TypertRemoteService } from './vendor/typert-protocol.js'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { allows, classifyTool } from './classify.ts'
 
 export const name = 'bash-guard'

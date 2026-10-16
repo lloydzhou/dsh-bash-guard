@@ -42,7 +42,7 @@ cd dsh-bash-guard
 npm ci
 npm run build
 
-dsh plugin --profile web add "$PWD"
+dsh plugin --profile web add .
 dsh --profile web
 ```
 
@@ -158,7 +158,7 @@ Agent 工具调用
 
 这是插件侧存储，**不是原生会话 JSONL 的一部分**。导出、分叉和历史回退不会自动携带或回放配置。
 
-客户端通过独立 RPC 读写，不使用命令轮询或额外会话写句柄。当前兼容实现携带宿主 `0.2.0-rc.2` 的协议模块，来源与 MIT 许可见 [vendor 说明](src/vendor/README.md)。升级宿主后应重新验证插件，而非假定始终兼容。
+客户端通过独立 RPC 读写，不使用命令轮询或额外会话写句柄。兼容基线为 DSH `0.2.0-rc.2`，不支持更早的宿主。服务端直接依赖官方 npm 包 `@deepseek-ai/dsh-typert-protocol@0.2.0-rc.2`，不内置或修改宿主协议源码。后续版本沿官方接口适配；协议依赖固定到已验证版本，升级时通过回归测试再更新，不承诺任意未来版本自动兼容。
 
 ## 开发
 
@@ -191,4 +191,4 @@ npm pack --dry-run
 
 ## License
 
-[MIT](LICENSE) © lloydzhou。随包携带的协议代码保留其 [原始 MIT 许可证](src/vendor/LICENSE.typert-protocol)。
+[MIT](LICENSE) © lloydzhou。官方协议与其他依赖遵循各自的许可证。

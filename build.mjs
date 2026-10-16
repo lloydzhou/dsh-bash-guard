@@ -1,10 +1,6 @@
 import ts from 'typescript'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-await mkdir(new URL('./lib/vendor/', import.meta.url), { recursive: true })
-await writeFile(new URL('./lib/vendor/typert-protocol.js', import.meta.url), await readFile(new URL('./src/vendor/typert-protocol.js', import.meta.url)))
-for (const file of ['LICENSE.typert-protocol', 'README.md']) {
-  await writeFile(new URL(`./lib/vendor/${file}`, import.meta.url), await readFile(new URL(`./src/vendor/${file}`, import.meta.url)))
-}
+await mkdir(new URL('./lib/', import.meta.url), { recursive: true })
 function compile(source, module) {
   const result = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2023, module, allowJs: true }, reportDiagnostics: true })
   const errors = result.diagnostics?.filter(d => d.category === ts.DiagnosticCategory.Error) ?? []

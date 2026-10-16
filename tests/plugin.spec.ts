@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { remoteMethods } from '../src/vendor/typert-protocol.js'
+import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { apply, recordSchema } from '../src/index.ts'
 
 const contexts: any[] = []
