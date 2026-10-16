@@ -1,0 +1,32 @@
+/* Native permission trigger declarations, namespaced; Menu owns all menu chrome. */
+.dsh-bg-trigger { border-radius: var(--dsw-radius-sm); min-width: 0; max-width: 220px; height: 28px; color: var(--dsw-alias-label-secondary); cursor: pointer; background: transparent; border: none; outline: none; align-items: center; gap: 4px; padding: 0 4px 0 8px; font-size: 13px; font-weight: 500; line-height: 20px; display: inline-flex; }
+.dsh-bg-trigger:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-bg-trigger:focus-visible { box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); }
+.dsh-bg-trigger:disabled { color: var(--dsw-alias-label-dimmed); cursor: default; }
+.dsh-bg-trigger-icon { flex: none; display: inline-flex; }
+.dsh-bg-trigger-icon svg { width: 14px; height: 14px; }
+.dsh-bg-trigger-label { text-overflow: ellipsis; white-space: nowrap; min-width: 0; overflow: hidden; }
+.dsh-bg-option-label { align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; display: inline-flex; }
+.dsh-bg-badge { color: var(--dsw-alias-label-tertiary); letter-spacing: .2px; flex: none; align-self: flex-start; margin-top: -1px; font-size: 8px; font-weight: 600; line-height: 10px; }
+.dsh-bg-chevron { color: var(--dsw-alias-label-caption); flex: none; transition: transform .12s; display: inline-flex; }
+.dsh-bg-chevron-open { transform: rotate(180deg); }
+@container (width <= 460px) { .dsh-bg-trigger:has(.dsh-bg-trigger-icon) .dsh-bg-trigger-label { display: none; } }
+.dsh-bg-editor { padding: 0 8px 4px 32px; color: var(--dsw-alias-label-primary); }
+.dsh-bg-scope { display: grid; grid-template-columns: 48px repeat(3, 32px); align-items: center; gap: 8px; min-height: 32px; }
+.dsh-bg-head { min-height: 26px; }
+.dsh-bg-column { text-align: center; font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.dsh-bg-level svg { width: 16px; height: 16px; }
+.dsh-bg-scope-label { width: 42px; flex: 0 0 42px; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-bg-scope-toggle { appearance: none; border: 0; background: transparent; border-radius: var(--dsw-radius-sm); box-sizing: border-box; width: max-content; max-width: none; justify-self: start; height: 24px; margin-left: -6px; padding: 0 6px; text-align: left; white-space: nowrap; font-family: inherit; cursor: pointer; }
+.dsh-bg-scope-toggle:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dsh-bg-level { appearance: none; border: 1px solid var(--dsw-alias-border-l1); background: transparent; color: var(--dsw-alias-label-secondary); border-radius: var(--dsw-radius-sm); width: 32px; height: 24px; padding: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.dsh-bg-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.dsh-bg-level:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dsh-bg-level[aria-checked="true"] { background: var(--dsw-alias-interactive-bg-hover-solid); color: var(--dsw-alias-label-primary); }
+.dsh-bg-editor button:focus-visible, .dsh-bg-error button:focus-visible { outline: 2px solid var(--dsw-focus-ring-color, var(--dsw-alias-label-secondary)); outline-offset: 1px; }
+.dsh-bg-editor button:disabled { cursor: default; color: var(--dsw-alias-label-tertiary); }
+.dsh-bg-error, .dsh-bg-status { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; padding: 6px 8px; overflow-wrap: anywhere; max-width: 300px; }
+.dsh-bg-error button { margin-left: 8px; padding: 2px 6px; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-sm); background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.dsh-bg-mode { font: 12px var(--ds-font-family-code, monospace); color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+@media (max-width: 360px) { .dsh-bg-editor { padding-left: 24px; } .dsh-bg-level { padding-inline: 4px; } }
+@media (prefers-reduced-motion: reduce) { .dsh-bg-chevron { transition: none; } }

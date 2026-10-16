@@ -1,0 +1,6 @@
+# Bash Guard is an independent knob, never a numeric permission preset.
+- insert:
+    - id: bash-guard
+      name: dsh-bash-guard
+      config:
+        mode: '0467'
