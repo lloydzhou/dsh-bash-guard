@@ -3,4 +3,4 @@
     - id: bash-guard
       name: dsh-bash-guard
       config:
-        mode: '0467'
+        mode: '4667'

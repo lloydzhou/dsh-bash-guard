@@ -9,7 +9,7 @@ export interface GuardEvent {
   type: string
   data: Record<string, unknown>
 }
-export const INITIAL_GUARD_STATE: Readonly<GuardState> = Object.freeze({ mode: '0467', active: false, preset: null })
+export const INITIAL_GUARD_STATE: Readonly<GuardState> = Object.freeze({ mode: '4667', active: false, preset: null })
 export const VALID_GUARD_MODE = /^[0-7]{4}$(?![\s\S])/
 export const GUARD_LEVELS = [
   { scope: 'system', label: '系统', levels: [0, 4, 7], labels: ['无', '只读', '读写执行'] },

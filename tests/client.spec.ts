@@ -6,7 +6,7 @@ const state = { mode: '0467', active: false, revision: 0 }
 const reply = (value: any = state) => ({ ok: true, value })
 const React = { Fragment: 'fragment', createElement: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children: children.flat().filter(x => x !== null && x !== false) }) }
 const walk = (node: any): any[] => typeof node === 'object' && node ? [node, ...(node.children || []).flatMap(walk)] : []
-const primitives = Object.fromEntries(['Menu', 'RiskConfirmation', 'PermissionIconReadOnlyRegular', 'PermissionIconWorkspaceWriteRegular', 'PermissionIconFullAccessRegular', 'IconChevronDownOutlineRegular', 'IconSettingsOutlineRegular'].map(name => [name, name]))
+const primitives = Object.fromEntries(['Menu', 'RiskConfirmation', 'PermissionIconReadOnlyRegular', 'PermissionIconWorkspaceWriteRegular', 'PermissionIconFullAccessRegular', 'IconChevronDownOutlineRegular', 'IconShieldOutlineRegular'].map(name => [name, name]))
 const catalog = { options: ['read-only', 'workspace-write', 'danger-full-access', 'auto', 'custom-extra'].map(value => ({ value, name: value })) }
 const commandReply = { ok: true, value: { matched: true, result: { kind: 'text', text: 'done' } } }
 
@@ -71,7 +71,7 @@ describe('dedicated remote transport', () => {
   it.each([reply({ ...state, revision: -1 }), reply({ ...state, active: 'yes' }), { ok: false }, { ok: true, value: { matched: true } }])('rejects invalid state %#', value => expect(() => decodeGuardState(value)).toThrow())
   it('does not require guard service to register native choices', () => {
     expect(inject).not.toContain('remote.bashGuard')
-    expect(inject).toEqual(['sessions', 'slots', 'remote', 'remote.permissionPresets'])
+    expect(inject).toEqual(['sessions', 'slots', 'locale', 'remote', 'remote.permissionPresets'])
   })
 })
 
@@ -126,7 +126,7 @@ describe('native permission composition', () => {
     expect(menu.props.items.map((item: any) => item.id)).toEqual([...catalog.options.map(o => o.value), 'guard-separator', 'bash-guard'])
     expect(menu.props.selectedId).toBe('bash-guard')
     expect(menu.props.items[5].type).toBe('separator')
-    expect(menu.props.items[6].icon.type).toBe('IconSettingsOutlineRegular')
+    expect(menu.props.items[6].icon.type).toBe('IconShieldOutlineRegular')
     expect(menu.props.items[0].icon.type).toBe('PermissionIconReadOnlyRegular')
     expect(menu.props.items[1].icon.type).toBe('PermissionIconWorkspaceWriteRegular')
     expect(menu.props.items[2].icon.type).toBe('PermissionIconFullAccessRegular')

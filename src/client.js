@@ -1,72 +1,61 @@
 import { createGuardEditor } from './GuardEditor.js'
+import { BASH_GUARD_NS, zh, en, defaultT, localeError } from './locales.js'
 
 // A missing guard service must never hide the host's native permission choices.
-export const inject = ['sessions', 'slots', 'remote', 'remote.permissionPresets']
+export const inject = ['sessions', 'slots', 'locale', 'remote', 'remote.permissionPresets']
 
-export function commandResult(reply) {
-  if (!reply?.ok) throw new Error(reply?.error?.message || '权限请求失败')
-  if (!reply.value?.matched) throw new Error('宿主未提供此权限命令')
+export function commandResult(reply, t = defaultT) {
+  if (!reply?.ok) throw (reply?.error?.message ? new Error(reply?.error?.message) : localeError(t, 'error.permissionRequest'))
+  if (!reply.value?.matched) throw localeError(t, 'error.permissionCommand')
   const result = reply.value.result
-  if (result?.kind === 'error') throw new Error(result.text || '权限请求失败')
+  if (result?.kind === 'error') throw (result.text ? new Error(result.text) : localeError(t, 'error.permissionRequest'))
   return result
 }
 
-export function decodeGuardState(reply) {
-  if (!reply?.ok) throw new Error(reply?.error?.message || 'Bash Guard 不可用')
+export function decodeGuardState(reply, t = defaultT) {
+  if (!reply?.ok) throw (reply?.error?.message ? new Error(reply?.error?.message) : localeError(t, 'error.unavailable'))
   const state = reply.value
   if (!/^[0-7]{4}$(?![\s\S])/.test(state?.mode) || typeof state.active !== 'boolean' || !Number.isSafeInteger(state.revision) || state.revision < 0) {
-    throw new Error('Bash Guard 返回了无效状态')
+    throw localeError(t, 'error.invalidState')
   }
   return { mode: state.mode, active: state.active, revision: state.revision }
 }
 
-export function createGuardTransport(remote, sessionId, sessionFor) {
+export function createGuardTransport(remote, sessionId, sessionFor, t = defaultT) {
   const guard = () => {
-    if (!remote.bashGuard) throw new Error('Bash Guard 不可用')
+    if (!remote.bashGuard) throw localeError(t, 'error.unavailable')
     return remote.bashGuard
   }
   return {
-    get: async () => decodeGuardState(await guard().get(sessionId)),
+    get: async () => decodeGuardState(await guard().get(sessionId), t),
     write: async (action, state, mode) => decodeGuardState(await guard().update(sessionId, {
       action, revision: state.revision, ...(mode === undefined ? {} : { mode }),
-    })),
+    }), t),
     // Deliberately independent of guard reads, readiness, and failures.
     preset: async id => {
       const live = sessionFor()
-      if (!live) throw new Error('会话尚未就绪，请稍后重试')
-      return commandResult(await live.command(`/permission ${id}`))
+      if (!live) throw localeError(t, 'error.sessionNotReady')
+      return commandResult(await live.command(`/permission ${id}`), t)
     },
     catalog: async () => {
       const reply = await remote.permissionPresets.catalog()
-      if (!reply?.ok) throw new Error(reply?.error?.message || '权限列表不可用')
-      if (!Array.isArray(reply.value?.options)) throw new Error('权限列表无效')
+      if (!reply?.ok) throw (reply?.error?.message ? new Error(reply?.error?.message) : localeError(t, 'error.catalogUnavailable'))
+      if (!Array.isArray(reply.value?.options)) throw localeError(t, 'error.invalidCatalog')
       return reply.value
     },
     subscribeCatalog: callback => remote.$on?.('permission-presets/catalog-changed', callback),
   }
 }
 
-const copy = {
-  'preset.readOnly': '仅可查看', 'preset.workspaceWrite': '工作区内修改', 'preset.fullAccess': '完全权限',
-  'close': '关闭', 'confirm.cancel': '取消',
-  'confirm.title': '确认启用完全权限？',
-  'confirm.description': '启用完全权限后，智能体将减少确认步骤，并且可以直接执行更多操作，包括敏感操作、文件修改或外部命令。仅建议在你信任当前任务时使用。',
-  'confirm.acknowledge': '我已了解风险，并愿意继续', 'confirm.enable': '启用完全权限',
-  'auto.label': 'Auto review', 'auto.badge': 'EXP',
-  'auto.description': '无沙箱运行；每次原生工具调用和 PTC 内层调用前由同一模型进行实验性审查。',
-  'auto.confirm.title': '确认启用 Auto review（实验）？',
-  'auto.confirm.description': 'Auto review 不使用沙箱。每次原生工具调用和 PTC 内层调用前，都会由与当前 agent 相同的模型进行审查；审查拒绝的调用由你批准或拒绝。此功能仍属实验性，可能误放行或误拒绝，并会消耗额外 token。',
-  'auto.confirm.acknowledge': '我已了解这些风险，并愿意继续', 'auto.confirm.enable': '启用 Auto review',
-}
 const labels = { 'read-only': ['preset.readOnly', 'Read Only'], 'workspace-write': ['preset.workspaceWrite', 'Workspace Write'], 'danger-full-access': ['preset.fullAccess', 'Full access'] }
 
 export function createPermissionControl(React, primitives) {
   const h = React.createElement
   const { Menu, RiskConfirmation, PermissionIconReadOnlyRegular, PermissionIconWorkspaceWriteRegular,
-    PermissionIconFullAccessRegular, IconChevronDownOutlineRegular, IconSettingsOutlineRegular } = primitives
-  const icons = { 'read-only': PermissionIconReadOnlyRegular, 'workspace-write': PermissionIconWorkspaceWriteRegular, 'danger-full-access': PermissionIconFullAccessRegular, 'bash-guard': IconSettingsOutlineRegular }
+    PermissionIconFullAccessRegular, IconChevronDownOutlineRegular, IconShieldOutlineRegular } = primitives
+  const icons = { 'read-only': PermissionIconReadOnlyRegular, 'workspace-write': PermissionIconWorkspaceWriteRegular, 'danger-full-access': PermissionIconFullAccessRegular, 'bash-guard': IconShieldOutlineRegular }
   const GuardEditor = createGuardEditor(React, primitives.IconCheckOutlineRegular)
-  return function PermissionControl({ sessionId, transport, locked, useProjection, t = key => copy[key] }) {
+  return function PermissionControl({ sessionId, transport, locked, useProjection, t = defaultT }) {
     const selection = useProjection('permissions')
     const [state, setState] = React.useState(null)
     const [catalog, setCatalog] = React.useState(null)
@@ -82,7 +71,7 @@ export function createPermissionControl(React, primitives) {
     const stateRef = React.useRef(null), api = React.useRef(transport)
     api.current = transport
     const publish = next => { stateRef.current = next; setState(next) }
-    const message = cause => cause instanceof Error ? cause.message : String(cause)
+    const message = cause => cause?.localeKey ? t(cause.localeKey) : cause instanceof Error ? cause.message : String(cause)
     const read = async () => {
       if (writing.current) return
       const generation = epoch.current, ticket = ++request.current
@@ -91,7 +80,7 @@ export function createPermissionControl(React, primitives) {
         const next = await api.current.get()
         if (generation === epoch.current && ticket === request.current) { publish(next); setError('') }
       } catch (cause) {
-        if (generation === epoch.current && ticket === request.current) { publish(null); setError(message(cause)) }
+        if (generation === epoch.current && ticket === request.current) { publish(null); setError(cause) }
       } finally { if (generation === epoch.current && ticket === request.current) setPending(false) }
     }
     const readCatalog = async () => {
@@ -99,7 +88,7 @@ export function createPermissionControl(React, primitives) {
       try {
         const next = await api.current.catalog()
         if (generation === epoch.current && ticket === catalogRequest.current) { setCatalog(next); setNativeError('') }
-      } catch (cause) { if (generation === epoch.current && ticket === catalogRequest.current) setNativeError(message(cause)) }
+      } catch (cause) { if (generation === epoch.current && ticket === catalogRequest.current) setNativeError(cause) }
     }
     React.useEffect(() => {
       ++epoch.current; writing.current = false; nativeWriting.current = false
@@ -125,7 +114,7 @@ export function createPermissionControl(React, primitives) {
         if (generation === epoch.current) publish(next)
       } catch (cause) {
         if (generation === epoch.current) {
-          setError(message(cause))
+          setError(cause)
           try { const next = await api.current.get(); if (generation === epoch.current) publish(next) } catch { if (generation === epoch.current) publish(null) }
         }
       } finally { if (generation === epoch.current) {
@@ -142,7 +131,7 @@ export function createPermissionControl(React, primitives) {
       try {
         await api.current.preset(id)
         if (generation === epoch.current) { publish(null); ++request.current; read() }
-      } catch (cause) { if (generation === epoch.current) setNativeError(message(cause)) }
+      } catch (cause) { if (generation === epoch.current) setNativeError(cause) }
       finally { if (generation === epoch.current) { nativeWriting.current = false; setPicking(false) } }
     }
     const choose = id => {
@@ -163,7 +152,7 @@ export function createPermissionControl(React, primitives) {
     const icon = id => icons[id] ? h(icons[id]) : undefined
     const current = state?.active ? 'bash-guard' : selection?.currentValue
     const option = catalog?.options.find(item => item.value === current)
-    const label = current === 'bash-guard' ? `bash-guard ${state.mode}` : labelFor(current || '权限', option?.name)
+    const label = current === 'bash-guard' ? `Bash Guard ${state.mode}` : (current ? labelFor(current, option?.name) : t('permission'))
     const items = (catalog?.options || []).map(option => ({
       id: option.value, icon: icon(option.value),
       label: option.value === 'auto' ? h('span', { className: 'dsh-bg-option-label', 'aria-label': `${t('auto.label')} ${t('auto.badge')}` }, t('auto.label'), h('sup', { className: 'dsh-bg-badge' }, t('auto.badge'))) : labelFor(option.value, option.name),
@@ -171,24 +160,24 @@ export function createPermissionControl(React, primitives) {
     }))
     items.push({ id: 'guard-separator', type: 'separator' }, {
       id: 'bash-guard', icon: icon('bash-guard'), disabled: !!locked || !state,
-      label: h('span', null, 'bash-guard 自定义', state && h('span', { className: 'dsh-bg-mode' }, ` ${state.mode}`)),
+      label: h('span', null, t('guard.custom'), state && h('span', { className: 'dsh-bg-mode' }, ` ${state.mode}`)),
     })
     const closeConfirmation = () => { setConfirmation(null); setAcknowledged(false) }
     const riskPrefix = confirmation === 'auto' ? 'auto.confirm.' : 'confirm.'
     return h(React.Fragment, null,
       h(Menu, { open, items, selectedId: current, onSelect: choose, onClose: () => setOpen(false), side: 'top', portal: true,
         anchor: h('button', { type: 'button', className: 'dsh-bg-trigger', disabled: !!locked || picking || confirmation !== null,
-          'aria-label': `访问模式，当前：${label}`, 'aria-haspopup': 'menu', 'aria-expanded': open,
+          'aria-label': t('mode', { name: label }), 'aria-haspopup': 'menu', 'aria-expanded': open,
           title: current === 'auto' ? t('auto.description') : option?.description, onClick: () => setOpen(!open),
         }, icon(current) && h('span', { className: 'dsh-bg-trigger-icon', 'aria-hidden': true }, icon(current)),
         h('span', { className: 'dsh-bg-trigger-label' }, label), current === 'auto' && h('sup', { className: 'dsh-bg-badge' }, t('auto.badge')),
         h('span', { className: `dsh-bg-chevron${open ? ' dsh-bg-chevron-open' : ''}`, 'aria-hidden': true }, h(IconChevronDownOutlineRegular))),
-      }, state && h(GuardEditor, { mode: state.mode, active: state.active, pending, locked,
+      }, state && h(GuardEditor, { mode: state.mode, active: state.active, pending, locked, t,
         onModeChange: mode => submit('mode', mode),
         onChange: (row, digit) => submit('mode', stateRef.current.mode.slice(0, row) + digit + stateRef.current.mode.slice(row + 1)),
-      }), h('span', { className: 'dsh-bg-sr-only', role: 'status' }, pending ? '正在同步权限' : ''),
-      error && h('div', { className: 'dsh-bg-error', role: 'alert' }, error, h('button', { type: 'button', disabled: pending, onClick: read }, '重试')),
-      nativeError && h('div', { className: 'dsh-bg-error', role: 'alert' }, nativeError, h('button', { type: 'button', onClick: readCatalog }, '重试'))),
+      }), h('span', { className: 'dsh-bg-sr-only', role: 'status' }, pending ? t('syncing') : ''),
+      error && h('div', { className: 'dsh-bg-error', role: 'alert' }, message(error), h('button', { type: 'button', disabled: pending, onClick: read }, t('retry'))),
+      nativeError && h('div', { className: 'dsh-bg-error', role: 'alert' }, message(nativeError), h('button', { type: 'button', onClick: readCatalog }, t('retry')))),
       confirmation !== null && h(RiskConfirmation, { open: true, title: t(`${riskPrefix}title`), description: t(`${riskPrefix}description`),
         acknowledgeLabel: t(`${riskPrefix}acknowledge`), cancelLabel: t('confirm.cancel'), closeLabel: t('close'), confirmLabel: t(`${riskPrefix}enable`),
         acknowledged, disabled: !!locked || picking, onAcknowledgedChange: setAcknowledged, onCancel: closeConfirmation,
@@ -199,26 +188,31 @@ export function createPermissionControl(React, primitives) {
 
 // Client-owned Typert contribution: mount the namespace before rendering the seat.
 // Structural schemas keep this artifact on host modules (no bundled Zod/React).
-export const guardRemoteContribution = {
-  package: 'dsh-bash-guard',
-  descriptors: ['get', 'update'].map(method => ({
-    id: `dsh-bash-guard#bashGuard/${method}`, service: 'bashGuard', namespace: 'bashGuard', method,
-    invocation: { kind: 'direct' },
-    parameters: [
-      { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-bash-guard#SessionId', create: () => ({ parse(value) {
-        if (typeof value !== 'string' || !value.trim()) throw new Error('A session ID is required')
-        return value
-      } }) } },
-      ...(method === 'update' ? [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardUpdate', create: () => ({ parse(value) {
-        if (!value || !['activate', 'mode', 'deactivate'].includes(value.action) || !Number.isSafeInteger(value.revision) || value.revision < 0 || (value.mode !== undefined && !/^[0-7]{4}$(?![\s\S])/.test(value.mode)) || (value.action === 'mode' && value.mode === undefined)) throw new Error('Invalid Bash Guard update')
-        return { action: value.action, revision: value.revision, ...(value.mode === undefined ? {} : { mode: value.mode }) }
-      } }) } }] : []),
-    ],
-    result: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardRecord', create: () => ({ parse: value => decodeGuardState({ ok: true, value }) }) },
-  })),
+export function createGuardRemoteContribution(t = key => key === 'error.sessionId' || key === 'error.invalidUpdate' ? en[key] : defaultT(key)) {
+  return {
+    package: 'dsh-bash-guard',
+    descriptors: ['get', 'update'].map(method => ({
+      id: `dsh-bash-guard#bashGuard/${method}`, service: 'bashGuard', namespace: 'bashGuard', method,
+      invocation: { kind: 'direct' },
+      parameters: [
+        { name: 'sessionId', wire: 'sessionId', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-bash-guard#SessionId', create: () => ({ parse(value) {
+          if (typeof value !== 'string' || !value.trim()) throw localeError(t, 'error.sessionId')
+          return value
+        } }) } },
+        ...(method === 'update' ? [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardUpdate', create: () => ({ parse(value) {
+          if (!value || !['activate', 'mode', 'deactivate'].includes(value.action) || !Number.isSafeInteger(value.revision) || value.revision < 0 || (value.mode !== undefined && !/^[0-7]{4}$(?![\s\S])/.test(value.mode)) || (value.action === 'mode' && value.mode === undefined)) throw localeError(t, 'error.invalidUpdate')
+          return { action: value.action, revision: value.revision, ...(value.mode === undefined ? {} : { mode: value.mode }) }
+        } }) } }] : []),
+      ],
+      result: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardRecord', create: () => ({ parse: value => decodeGuardState({ ok: true, value }, t) }) },
+    })),
+  }
 }
+export const guardRemoteContribution = createGuardRemoteContribution()
 
 export async function apply(ctx) {
+  ctx.effect(() => ctx.locale.register(BASH_GUARD_NS, { zh, en }), 'bash-guard: dictionaries')
+  const t = ctx.locale.bind(BASH_GUARD_NS)
   // Resolve host modules inside apply: the browser loader owns React and styles.
   const React = require('react')
   const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
@@ -232,16 +226,16 @@ export async function apply(ctx) {
       $on: (event, listener) => scope.remote.$on(event, listener),
     }
     scope.slots.inject('conversation.input.permission', () => scope.slots.register({
-      name: 'conversation.input.permission', priority: -100, locale: 'permission.access',
-      inject: sessionId => ({ sessionId, transport: createGuardTransport(remote, sessionId, () => scope.sessions.binding(sessionId)?.session) }),
+      name: 'conversation.input.permission', priority: -100, locale: BASH_GUARD_NS,
+      inject: sessionId => ({ sessionId, transport: createGuardTransport(remote, sessionId, () => scope.sessions.binding(sessionId)?.session, t) }),
     }, Control))
   }
   // Leave the host seat intact while the injected guard namespace resolves.
   // On mount failure, native choices still work through the guard-free adapter.
   try {
-    await ctx.remote.$mount(guardRemoteContribution)
+    await ctx.remote.$mount(createGuardRemoteContribution(t))
   } catch (error) {
-    console.warn('Bash Guard RPC unavailable', error)
+    console.warn(t('error.rpcUnavailable'), error)
     register(ctx, undefined)
     return
   }

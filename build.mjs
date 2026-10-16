@@ -8,7 +8,7 @@ function compile(source, module) {
   return result.outputText
 }
 const factories = []
-for (const name of ['client', 'GuardEditor']) {
+for (const name of ['client', 'GuardEditor', 'locales']) {
   const source = await readFile(new URL(`./src/${name}.js`, import.meta.url), 'utf8')
   factories.push(`${JSON.stringify('./'+name+'.js')}: (module,exports,require) => {\n${compile(source, ts.ModuleKind.CommonJS)}\n}`)
 }

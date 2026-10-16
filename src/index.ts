@@ -47,7 +47,7 @@ export class BashGuardService extends TypertRemoteService {
 }
 
 export async function apply(ctx: any, config: { mode?: string } = {}): Promise<void> {
-  const fallback = config.mode ?? '0467'
+  const fallback = config.mode ?? '4667'
   if (!valid(fallback)) throw new Error('bash-guard: expected four octal digits')
   const domain = await ctx.storageDomain.open({ name: 'bash_guard', version: 1, layout: 'per-record', tables: { sessions: { valueSchema: recordSchema } } })
   ctx.effect(() => () => domain.close())

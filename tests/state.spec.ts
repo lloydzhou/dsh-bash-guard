@@ -3,25 +3,25 @@ import { activateGuard, applyGuardEvent, changeGuardLevel, foldGuard, GUARD_LEVE
 
 describe('confirmed third-knob interaction contract', () => {
   it('starts collapsed, retaining a sensible default without overriding a preset', () => {
-    expect(foldGuard([])).toEqual({ mode: '0467', active: false, preset: null })
+    expect(foldGuard([])).toEqual({ mode: '4667', active: false, preset: null })
   })
   it('activates with whole-value knob and separate intent; no numeric presets', () => {
     const events = activateGuard(INITIAL_GUARD_STATE)
     expect(events).toEqual([
-      { type: 'bash-guard/mode', data: { mode: '0467' } },
+      { type: 'bash-guard/mode', data: { mode: '4667' } },
       { type: 'permission/preset', data: { preset: 'bash-guard' } },
     ])
-    expect(foldGuard(events)).toEqual({ mode: '0467', active: true, preset: 'bash-guard' })
+    expect(foldGuard(events)).toEqual({ mode: '4667', active: true, preset: 'bash-guard' })
   })
   it('changes immediately; preset collapses and preserves digits; reactivation restores', () => {
     const events = activateGuard(INITIAL_GUARD_STATE)
     events.push(changeGuardLevel(foldGuard(events), 0, 4))
-    expect(foldGuard(events).mode).toBe('4467')
+    expect(foldGuard(events).mode).toBe('4667')
     events.push({ type: 'permission/preset', data: { preset: 'read-only' } })
     const collapsed = foldGuard(events)
-    expect(collapsed).toEqual({ mode: '4467', active: false, preset: 'read-only' })
+    expect(collapsed).toEqual({ mode: '4667', active: false, preset: 'read-only' })
     events.push(...activateGuard(collapsed))
-    expect(foldGuard(events)).toEqual({ mode: '4467', active: true, preset: 'bash-guard' })
+    expect(foldGuard(events)).toEqual({ mode: '4667', active: true, preset: 'bash-guard' })
     expect(foldGuard(JSON.parse(JSON.stringify(events)))).toEqual(foldGuard(events))
   })
   it('keeps mode and intent independent', () => {
@@ -47,6 +47,6 @@ describe('confirmed third-knob interaction contract', () => {
     expect(a.active).toBe(true)
     expect(b.active).toBe(false)
     expect(applyGuardEvent(a, { type: 'assistant/message', data: {} })).toBe(a)
-    expect(INITIAL_GUARD_STATE.mode).toBe('0467')
+    expect(INITIAL_GUARD_STATE.mode).toBe('4667')
   })
 })

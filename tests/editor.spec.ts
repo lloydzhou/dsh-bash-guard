@@ -5,14 +5,14 @@ const Editor = createGuardEditor(React)
 const flatten = (node: any): any[] => node && typeof node === 'object' ? [node, ...node.children.flatMap(flatten)] : []
 const checkboxes = (tree: any) => flatten(tree).filter(n => n.props?.role === 'checkbox')
 describe('confirmed inline scope editor', () => {
-  it.each(['0000', '0477', '7077', '7777'])('global action labels and atomically updates %s', mode => {
+  it.each(['0000', '4667', '7077', '7777'])('global action labels and atomically updates %s', mode => {
     const onModeChange = vi.fn()
     const button = flatten(Editor({mode, active:true, onModeChange})).find(n => n.props?.className?.includes('dsh-bg-all-toggle'))
     expect(button.children[0]).toBe(mode === '7777' ? '默认' : '全选')
     const stopPropagation = vi.fn()
     button.props.onClick({stopPropagation})
     expect(stopPropagation).toHaveBeenCalledOnce()
-    expect(onModeChange).toHaveBeenCalledExactlyOnceWith(mode === '7777' ? '0477' : '7777')
+    expect(onModeChange).toHaveBeenCalledExactlyOnceWith(mode === '7777' ? '4667' : '7777')
     for (const status of [{pending:true}, {locked:true}]) {
       flatten(Editor({mode,active:true,...status,onModeChange})).find(n => n.props?.className?.includes('dsh-bg-all-toggle')).props.onClick({stopPropagation(){}})
     }
