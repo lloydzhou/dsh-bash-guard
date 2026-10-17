@@ -1,4 +1,5 @@
 import { createGuardEditor } from './GuardEditor.js'
+import { createJevSettings } from './JevSettings.js'
 import { BASH_GUARD_NS, zh, en, defaultT, localeError } from './locales.js'
 
 // A missing guard service must never hide the host's native permission choices.
@@ -18,7 +19,54 @@ export function decodeGuardState(reply, t = defaultT) {
   if (!/^[0-7]{4}$(?![\s\S])/.test(state?.mode) || typeof state.active !== 'boolean' || !Number.isSafeInteger(state.revision) || state.revision < 0) {
     throw localeError(t, 'error.invalidState')
   }
-  return { mode: state.mode, active: state.active, revision: state.revision }
+  const engine = state.engine === undefined ? 'local' : state.engine
+  if (!['local', 'jev'].includes(engine)) throw localeError(t, 'error.invalidState')
+  const decision = state.decision
+  if (decision !== undefined && (!decision || !['local', 'jev'].includes(decision.source) || typeof decision.fallback !== 'boolean' || typeof decision.allowed !== 'boolean')) throw localeError(t, 'error.invalidState')
+  return { mode: state.mode, active: state.active, revision: state.revision, engine,
+    ...(decision === undefined ? {} : { decision: { source: decision.source, fallback: decision.fallback, allowed: decision.allowed } }) }
+}
+
+export function decodeSettings(reply, t = defaultT) {
+  if (!reply?.ok) throw localeError(t, 'error.settingsRequest')
+  const value = reply.value
+  if (!value || typeof value.endpoint !== 'string' || typeof value.model !== 'string' || !Number.isSafeInteger(value.timeoutMs) || value.timeoutMs <= 0 || typeof value.hasApiKey !== 'boolean' || !Number.isSafeInteger(value.revision) || value.revision < 0) throw localeError(t, 'error.invalidSettings')
+  if (value.proxyUrl !== undefined && typeof value.proxyUrl !== 'string') throw localeError(t, 'error.invalidSettings')
+  return { endpoint: value.endpoint, model: value.model, timeoutMs: value.timeoutMs, proxyUrl: value.proxyUrl ?? '', hasApiKey: value.hasApiKey, revision: value.revision }
+}
+export function settingsTestError(cause, t = defaultT) {
+  // Host RPC may reject instead of returning an {ok:false} envelope.
+  // Expose only whitelisted codes, never arbitrary error text or credentials.
+  const text = [cause?.message, cause?.error?.message, cause?.cause?.message].filter(value => typeof value === 'string').join(' ')
+  const code = text.match(/\bJEV_(?:HTTP_\d{3}|MISSING_KEY|INPUT_TOO_LARGE|INVALID_RESPONSE|TIMEOUT|NETWORK_OR_RESPONSE|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT)\b/)?.[0]
+  return Object.assign(localeError(t, 'error.settingsTest'), { diagnostic: code ?? 'JEV_RPC_OR_CONFIG' })
+}
+export function decodeSettingsTest(reply, t = defaultT) {
+  if (!reply?.ok) throw settingsTestError(reply, t)
+  if (reply.value?.ok !== true || typeof reply.value.model !== 'string') throw localeError(t, 'error.invalidSettings')
+  return { ok: true, model: reply.value.model }
+}
+export function parseSettingsRequest(value, save = true, t = defaultT) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw localeError(t, 'error.invalidSettings')
+  const result = {}
+  for (const key of ['endpoint', 'model', 'timeoutMs']) {
+    if (value[key] === undefined && !save) continue
+    if (key === 'timeoutMs' ? !Number.isSafeInteger(value[key]) || value[key] <= 0 : typeof value[key] !== 'string' || !value[key].trim()) throw localeError(t, 'error.invalidSettings')
+    result[key] = value[key]
+  }
+  if (value.proxyUrl !== undefined) {
+    if (typeof value.proxyUrl !== 'string') throw localeError(t, 'error.invalidSettings')
+    result.proxyUrl = value.proxyUrl
+  }
+  if (value.apiKey !== undefined) {
+    if (typeof value.apiKey !== 'string') throw localeError(t, 'error.invalidSettings')
+    result.apiKey = value.apiKey
+  }
+  if (save) {
+    if (!Number.isSafeInteger(value.revision) || value.revision < 0) throw localeError(t, 'error.invalidSettings')
+    result.revision = value.revision
+  }
+  return result
 }
 
 export function createGuardTransport(remote, sessionId, sessionFor, t = defaultT) {
@@ -29,8 +77,14 @@ export function createGuardTransport(remote, sessionId, sessionFor, t = defaultT
   return {
     get: async () => decodeGuardState(await guard().get(sessionId), t),
     write: async (action, state, mode) => decodeGuardState(await guard().update(sessionId, {
-      action, revision: state.revision, ...(mode === undefined ? {} : { mode }),
+      action, revision: state.revision, ...(mode === undefined ? {} : action === 'engine' ? { engine: mode } : { mode }),
     }), t),
+    getSettings: async () => decodeSettings(await guard().getSettings(), t),
+    saveSettings: async request => decodeSettings(await guard().saveSettings(parseSettingsRequest(request, true, t)), t),
+    testSettings: async request => {
+      try { return decodeSettingsTest(await guard().testSettings(parseSettingsRequest(request, false, t)), t) }
+      catch (cause) { if (cause?.diagnostic) throw cause; throw settingsTestError(cause, t) }
+    },
     // Deliberately independent of guard reads, readiness, and failures.
     preset: async id => {
       const live = sessionFor()
@@ -62,6 +116,7 @@ export function createPermissionControl(React, primitives) {
   }
   const icons = { 'read-only': PermissionIconReadOnlyRegular, 'workspace-write': PermissionIconWorkspaceWriteRegular, 'danger-full-access': PermissionIconFullAccessRegular, 'bash-guard': GuardPermissionIcon }
   const GuardEditor = createGuardEditor(React, primitives.IconCheckOutlineRegular)
+  const JevSettings = createJevSettings(React)
   return function PermissionControl({ sessionId, transport, locked, useProjection, t = defaultT }) {
     const selection = useProjection('permissions')
     const [state, setState] = React.useState(null)
@@ -73,6 +128,8 @@ export function createPermissionControl(React, primitives) {
     const [confirmation, setConfirmation] = React.useState(null)
     const [acknowledged, setAcknowledged] = React.useState(false)
     const [picking, setPicking] = React.useState(false)
+    const [settingsOpen, setSettingsOpen] = React.useState(false)
+    const settingsIntent = React.useRef(false), settingsReturnFocus = React.useRef(null), settingsChecking = React.useRef(false)
     const epoch = React.useRef(0), request = React.useRef(0), catalogRequest = React.useRef(0)
     const writing = React.useRef(false), nativeWriting = React.useRef(false)
     const stateRef = React.useRef(null), api = React.useRef(transport)
@@ -100,6 +157,7 @@ export function createPermissionControl(React, primitives) {
     React.useEffect(() => {
       ++epoch.current; writing.current = false; nativeWriting.current = false
       publish(null); setCatalog(null); setOpen(false); setConfirmation(null); setPicking(false)
+      setSettingsOpen(false); settingsIntent.current = false; settingsChecking.current = false
       readCatalog()
       const stop = api.current.subscribeCatalog?.(() => { setCatalog(null); readCatalog() })
       return () => { ++epoch.current; stop?.() }
@@ -130,6 +188,24 @@ export function createPermissionControl(React, primitives) {
           if (generation === epoch.current && focusedSegment.isConnected && !focusedSegment.disabled && document.activeElement === document.body) focusedSegment.focus()
         })
       } }
+    }
+    const showSettings = (intent = false) => {
+      settingsIntent.current = intent
+      settingsReturnFocus.current = document.activeElement
+      setOpen(false); setSettingsOpen(true)
+    }
+    const chooseEngine = async engine => {
+      if (locked || pending || settingsChecking.current) return
+      if (engine === 'local') { submit('engine', engine); return }
+      const generation = epoch.current
+      settingsChecking.current = true
+      try {
+        const settings = await api.current.getSettings()
+        if (generation !== epoch.current) return
+        // Every new session opt-in sees the external-data disclosure before enabling.
+        showSettings(true)
+      } catch (cause) { if (generation === epoch.current) setError(cause) }
+      finally { if (generation === epoch.current) settingsChecking.current = false }
     }
     const selectPreset = async id => {
       if (locked || nativeWriting.current) return
@@ -182,12 +258,21 @@ export function createPermissionControl(React, primitives) {
         }, icon(current) && h('span', { className: 'dsh-bg-trigger-icon', 'aria-hidden': true }, icon(current)),
         h('span', { className: 'dsh-bg-trigger-label' }, label), current === 'auto' && h('sup', { className: 'dsh-bg-badge' }, t('auto.badge')),
         h('span', { className: `dsh-bg-chevron${open ? ' dsh-bg-chevron-open' : ''}`, 'aria-hidden': true }, h(IconChevronDownOutlineRegular))),
-      }, state && h(GuardEditor, { mode: state.mode, active: state.active, pending, locked, t,
+      }, state && h(GuardEditor, { mode: state.mode, active: state.active, engine: state.engine, decision: state.decision, pending, locked, t,
+        onEngineChange: chooseEngine, onSettings: () => showSettings(false),
         onModeChange: mode => submit('mode', mode),
         onChange: (row, digit) => submit('mode', stateRef.current.mode.slice(0, row) + digit + stateRef.current.mode.slice(row + 1)),
       }), h('span', { className: 'dsh-bg-sr-only', role: 'status' }, pending ? t('syncing') : ''),
       error && h('div', { className: 'dsh-bg-error', role: 'alert' }, message(error), h('button', { type: 'button', disabled: pending, onClick: read }, t('retry'))),
       nativeError && h('div', { className: 'dsh-bg-error', role: 'alert' }, message(nativeError), h('button', { type: 'button', onClick: readCatalog }, t('retry')))),
+      settingsOpen && h(JevSettings, { key: sessionId, transport, t, locked, enableIntent: settingsIntent.current, returnFocus: settingsReturnFocus.current,
+        onClose: () => { settingsIntent.current = false; setSettingsOpen(false) },
+        onSaved: settings => {
+          const enable = settingsIntent.current && settings.hasApiKey
+          settingsIntent.current = false; setSettingsOpen(false)
+          if (enable && stateRef.current?.active) submit('engine', 'jev')
+        },
+      }),
       confirmation !== null && h(RiskConfirmation, { open: true, title: t(`${riskPrefix}title`), description: t(`${riskPrefix}description`),
         acknowledgeLabel: t(`${riskPrefix}acknowledge`), cancelLabel: t('confirm.cancel'), closeLabel: t('close'), confirmLabel: t(`${riskPrefix}enable`),
         acknowledged, disabled: !!locked || picking, onAcknowledgedChange: setAcknowledged, onCancel: closeConfirmation,
@@ -214,12 +299,22 @@ export function createGuardRemoteContribution(t = key => key === 'error.sessionI
           return value
         } }) } },
         ...(method === 'update' ? [{ name: 'request', wire: 'request', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardUpdate', create: () => ({ parse(value) {
-          if (!value || !['activate', 'mode', 'deactivate'].includes(value.action) || !Number.isSafeInteger(value.revision) || value.revision < 0 || (value.mode !== undefined && !/^[0-7]{4}$(?![\s\S])/.test(value.mode)) || (value.action === 'mode' && value.mode === undefined)) throw localeError(t, 'error.invalidUpdate')
-          return { action: value.action, revision: value.revision, ...(value.mode === undefined ? {} : { mode: value.mode }) }
+          if (!value || !['activate', 'mode', 'deactivate', 'engine'].includes(value.action) || !Number.isSafeInteger(value.revision) || value.revision < 0 || (value.mode !== undefined && !/^[0-7]{4}$(?![\s\S])/.test(value.mode)) || (value.action === 'mode' && value.mode === undefined) || (value.engine !== undefined && !['local', 'jev'].includes(value.engine)) || (value.action === 'engine' && value.engine === undefined)) throw localeError(t, 'error.invalidUpdate')
+          return { action: value.action, revision: value.revision, ...(value.mode === undefined ? {} : { mode: value.mode }), ...(value.engine === undefined ? {} : { engine: value.engine }) }
         } }) } }] : []),
       ],
       result: { mode: 'strict', typeSymbol: 'dsh-bash-guard#GuardRecord', create: () => ({ parse: value => decodeGuardState({ ok: true, value }, t) }) },
-    })),
+    })).concat(['getSettings', 'saveSettings', 'testSettings'].map(method => ({
+      id: `dsh-bash-guard#bashGuard/${method}`, service: 'bashGuard', namespace: 'bashGuard', method,
+      invocation: { kind: 'direct' },
+      parameters: method === 'getSettings' ? [] : [{ name: 'request', wire: 'request', source: 'json', codec: {
+        mode: 'strict', typeSymbol: `dsh-bash-guard#${method === 'saveSettings' ? 'SaveSettingsRequest' : 'TestSettingsRequest'}`,
+        create: () => ({ parse: value => parseSettingsRequest(value, method === 'saveSettings', t) }),
+      } }],
+      result: { mode: 'strict', typeSymbol: `dsh-bash-guard#${method === 'testSettings' ? 'TestSettingsResult' : 'PublicSettings'}`,
+        create: () => ({ parse: value => (method === 'testSettings' ? decodeSettingsTest : decodeSettings)({ ok: true, value }, t) }),
+      },
+    }))),
   }
 }
 export const guardRemoteContribution = createGuardRemoteContribution()

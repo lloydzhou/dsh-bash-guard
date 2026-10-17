@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createGuardTransport, decodeGuardState, inject, createPermissionControl, guardRemoteContribution } from '../src/client.js'
 import { createGuardEditor } from '../src/GuardEditor.js'
 
-const state = { mode: '0467', active: false, revision: 0 }
+const state = { mode: '0467', active: false, revision: 0, engine: 'local' }
 const reply = (value: any = state) => ({ ok: true, value })
 const React = { Fragment: 'fragment', createElement: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children: children.flat().filter(x => x !== null && x !== false) }) }
 const walk = (node: any): any[] => typeof node === 'object' && node ? [node, ...(node.children || []).flatMap(walk)] : []

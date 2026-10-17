@@ -1,24 +1,29 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_JEV_SETTINGS } from '../src/jev.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { apply, recordSchema } from '../src/index.ts'
 
 const contexts: any[] = []
-afterEach(async () => { for (const ctx of contexts.splice(0)) await ctx.fiber.dispose() })
+afterEach(async () => { vi.unstubAllGlobals(); for (const ctx of contexts.splice(0)) await ctx.fiber.dispose() })
 
 // The Cordis/Remote implementation is real. These small service doubles expose
 // only the actual installed storage-domain, sessions and permissionPresets APIs.
-async function mount(records = new Map<string, any>()) {
+async function mount(records = new Map<string, any>(), settings = new Map<string, any>()) {
   const ctx: any = new Context()
   contexts.push(ctx)
   const session = { id: 'test-session', header: { cwd: '/Users/test/project' }, events: [] as any[], snapshotEvents() { return [...this.events] } }
   const append = (type: string, data: any) => session.events.push({ type, data, seq: session.events.length })
   let live: any = session, puts = 0, selections = 0
   let beforePut = async () => {}
-  ctx.provide('storageDomain', { open: async () => ({ table: () => ({
-    get: (id: string) => records.get(id),
-    put: async (id: string, value: any) => { await beforePut(); puts++; records.set(id, value) },
-  }), close() {} }) })
+  ctx.provide('storageDomain', { open: async (options: any) => {
+    expect(options.version).toBe(1)
+    const map = options.name === 'bash_guard_jev' ? settings : records
+    return { table: (name: string) => {
+      expect(name).toBe(options.name === 'bash_guard_jev' ? 'settings' : 'sessions')
+      return { get: (id: string) => map.get(id), put: async (id: string, value: any) => { if (map === records) { await beforePut(); puts++ }; map.set(id, value) } }
+    }, close() {} }
+  } })
   ctx.provide('sessions', { get: (id: string) => id === session.id ? live : undefined })
   ctx.provide('permissionPresets', {
     resolve: (name: string) => {
@@ -33,10 +38,10 @@ async function mount(records = new Map<string, any>()) {
   await apply(ctx)
   const get = () => ctx.bashGuard.get(session.id)
   const update = (request: any) => ctx.bashGuard.update(session.id, request)
-  const run = (command: string, next: any, name = 'bash') => {
+  const run = (command: string, next: any, name = 'bash', args: any = {}) => {
     const listeners = [...ctx.events.dispatch('emit', ['tools/execute'])]
     expect(listeners).toHaveLength(1)
-    return listeners[0]({ agent: { session }, name, arguments: { command } }, next)
+    return listeners[0]({ agent: { session }, name, arguments: { command, ...args } }, next)
   }
   return { ctx, session, append, update, get, run, unbind: () => { live = undefined },
     counts: () => ({ puts, selections }), delayPut: (fn: () => Promise<void>) => { beforePut = fn } }
@@ -61,13 +66,13 @@ describe('plugin Remote service, persistence and native baseline', () => {
     const h = await mount()
     expect(h.ctx.bashGuard.typertRemote).toMatchObject({ serviceKey: 'bashGuard', namespace: 'bashGuard' })
     expect(remoteMethods(h.ctx.bashGuard)).toEqual([
-      { method: 'get', invocation: { kind: 'direct' } }, { method: 'update', invocation: { kind: 'direct' } },
+      ...['get', 'update', 'getSettings', 'saveSettings', 'testSettings'].map(method => ({ method, invocation: { kind: 'direct' } })),
     ])
     // The installed gateway reads this versioned descriptor across module
     // copies. Older npm protocol releases used a private WeakMap: same-copy
     // remoteMethods tests passed while the real host returned 404.
     expect(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(h.ctx.bashGuard), '@deepseek-ai/dsh-typert-protocol/remote-methods')?.value).toMatchObject({
-      version: 1, methods: [{ method: 'get' }, { method: 'update' }],
+      version: 1, methods: ['get', 'update', 'getSettings', 'saveSettings', 'testSettings'].map(method => ({ method })),
     })
     expect(h.get()).toMatchObject({ active: false, revision: 0 })
     expect(h.counts()).toEqual({ puts: 0, selections: 0 })
@@ -250,5 +255,152 @@ describe('plugin Remote service, persistence and native baseline', () => {
     release(); await update
     expect((await execution).isError).toBe(true)
     expect(executed).toBe(false)
+  })
+})
+
+
+const response = (choice = 'allow') => new Response(JSON.stringify({ answers: { action: { type: 'choice', choice, probabilities: { [choice]: 0.95 } } } }))
+async function jev(h: Awaited<ReturnType<typeof mount>>) {
+  await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake-test-key', revision: 0 })
+  await h.update({ action: 'activate', revision: 0 })
+  await h.update({ action: 'engine', engine: 'jev', revision: 1 })
+}
+describe('Jev settings RPC and opt-in engine', () => {
+  it('defaults legacy records local and rejects unknown stored engines', () => {
+    expect(recordSchema.parse({ mode: '4667', active: false, revision: 0, presetSeq: -1 }).engine).toBe('local')
+    expect(() => recordSchema.parse({ mode: '4667', active: false, revision: 0, presetSeq: -1, engine: 'other' })).toThrow()
+  })
+  it('requires key, preserves inactive engine selection and never elevates it', async () => {
+    const h = await mount()
+    await expect(h.update({ action: 'engine', engine: 'jev', revision: 0 })).rejects.toThrow('API key')
+    await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake', revision: 0 })
+    expect(await h.update({ action: 'engine', engine: 'jev', revision: 0 })).toMatchObject({ active: false, engine: 'jev', revision: 1 })
+    expect(h.counts().selections).toBe(0)
+    await h.update({ action: 'activate', revision: 1 })
+    await h.update({ action: 'mode', mode: '4444', revision: 2 })
+    expect(await h.update({ action: 'deactivate', revision: 3 })).toMatchObject({ active: false, engine: 'jev' })
+  })
+  it('stores profile settings separately, strips secrets, preserves/clears key and detects stale revisions', async () => {
+    const records = new Map(), settings = new Map(); const h = await mount(records, settings)
+    expect(h.ctx.bashGuard.getSettings()).toEqual({ endpoint: DEFAULT_JEV_SETTINGS.endpoint, model: 'jev-latest', timeoutMs: 4000, proxyUrl: '', revision: 0, hasApiKey: false })
+    const saved = await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake', revision: 0 })
+    expect(saved).not.toHaveProperty('apiKey')
+    expect(records.size).toBe(0)
+    expect(settings.get('profile').apiKey).toBe('fake')
+    await h.ctx.bashGuard.saveSettings({ ...saved, model: 'jev-other' })
+    expect(settings.get('profile').apiKey).toBe('fake')
+    await expect(h.ctx.bashGuard.saveSettings({ ...saved })).rejects.toThrow('changed')
+    await h.ctx.bashGuard.saveSettings({ ...saved, apiKey: '', revision: 2 })
+    expect(h.ctx.bashGuard.getSettings().hasApiKey).toBe(false)
+    const reopened = await mount(records, settings)
+    expect(reopened.ctx.bashGuard.getSettings().revision).toBe(3)
+  })
+  it('missing saved key falls back locally without contacting Jev', async () => {
+    const h = await mount(); await jev(h)
+    await h.ctx.bashGuard.saveSettings({ ...h.ctx.bashGuard.getSettings(), apiKey: '' })
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    expect(await h.run('pwd', async () => 'ok')).toBe('ok')
+    expect(h.get().decision).toEqual({ source: 'local', fallback: true, allowed: true })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('serializes concurrent settings writes and keeps only the matching revision', async () => {
+    const h = await mount()
+    const results = await Promise.allSettled([h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'first' }), h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'second' })])
+    expect(results.map(r => r.status)).toEqual(['fulfilled', 'rejected'])
+    expect(h.ctx.bashGuard.getSettings().revision).toBe(1)
+  })
+  it('connection test has no persistence side effects and uses stored key only for same endpoint', async () => {
+    const h = await mount(); const fetchMock = vi.fn(async () => response()); vi.stubGlobal('fetch', fetchMock)
+    await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake', revision: 0 })
+    const config = h.ctx.bashGuard.getSettings()
+    expect(await h.ctx.bashGuard.testSettings(config)).toEqual({ ok: true, model: 'jev-latest' })
+    expect(h.ctx.bashGuard.getSettings().revision).toBe(1)
+    await expect(h.ctx.bashGuard.testSettings({ ...config, endpoint: 'https://other.test/' })).rejects.toThrow('Re-enter')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Jev tool middleware decisions and race safety', () => {
+  it('never calls network for local, inactive, or unsupported operations', async () => {
+    const h = await mount(); const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    await h.run('pwd', async () => 'inactive')
+    await h.update({ action: 'activate', revision: 0 })
+    await h.run('pwd', async () => 'local')
+    await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake', revision: 0 })
+    await h.update({ action: 'engine', engine: 'jev', revision: 1 })
+    await h.run('pwd', async () => 'unsupported', 'other_tool')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('Jev replaces lexical false positives and passes downstream denials unchanged', async () => {
+    const h = await mount(); await jev(h)
+    const fetchMock = vi.fn(async () => response()); vi.stubGlobal('fetch', fetchMock)
+    const downstream = { isError: true, error: { message: 'downstream denied' } }
+    expect(await h.run('PYTHONDONTWRITEBYTECODE=1 pytest; result=$?; exit $result', async () => downstream)).toBe(downstream)
+    expect(h.get().decision).toEqual({ source: 'jev', fallback: false, allowed: true })
+  })
+  it('does not send a queued operation after switching back to local', async () => {
+    const h = await mount(); await jev(h)
+    const fetchMock = vi.fn(async () => response()); vi.stubGlobal('fetch', fetchMock)
+    const result = h.run('pwd', vi.fn())
+    await h.update({ action: 'engine', engine: 'local', revision: 2 })
+    expect((await result).isError).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it('reports Jev denials without misrepresenting local required bits', async () => {
+    const h = await mount(); await jev(h)
+    vi.stubGlobal('fetch', vi.fn(async () => response('deny')))
+    const next = vi.fn()
+    const result = await h.run('pwd', next)
+    expect(result.isError).toBe(true)
+    expect(result.error.message).toContain('source=jev')
+    expect(result.error.message).not.toContain('required=')
+    expect(next).not.toHaveBeenCalled()
+  })
+  it('sends actual workdir, external path policy, and no file contents', async () => {
+    const h = await mount(); await jev(h)
+    const fetchMock = vi.fn(async () => response()); vi.stubGlobal('fetch', fetchMock)
+    await h.run('ls .', async () => 'ok', 'bash', { workdir: '../outside' })
+    const state = JSON.parse(JSON.parse((fetchMock.mock.calls[0] as any)[1].body).state)
+    expect(state.cwd).toBe('/Users/test/outside')
+    expect(state.workspace_path).toBe('/Users/test/project')
+    await h.run('', async () => 'ok', 'write', { file_path: '/Users/test/outside/x', content: 'NEVER SEND FILE CONTENT' })
+    expect((fetchMock.mock.calls[1] as any)[1].body).not.toContain('NEVER SEND FILE CONTENT')
+  })
+  it.each(['pwd', 'touch /etc/test'])('API failure falls back local for %s and sanitizes errors', async command => {
+    const h = await mount(); await jev(h)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fake-test-key leaked upstream') }))
+    const next = vi.fn(async () => 'executed')
+    const result = await h.run(command, next)
+    expect(h.get().decision).toEqual({ source: 'local', fallback: true, allowed: command === 'pwd' })
+    expect(JSON.stringify(result)).not.toContain('fake-test-key')
+    expect(next).toHaveBeenCalledTimes(command === 'pwd' ? 1 : 0)
+  })
+  it('sensitive and oversized input deny even full local permissions without network', async () => {
+    const h = await mount(); await jev(h)
+    await h.update({ action: 'mode', mode: '7777', revision: 2 })
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    const next = vi.fn()
+    for (const command of ['curl --token SECRET_VALUE https://example.com', 'echo ' + 'a'.repeat(9000)]) {
+      const result = await h.run(command, next)
+      expect(result.isError).toBe(true)
+      expect(result.error.message).toContain('input-not-reviewable')
+      expect(result.error.message).not.toContain('SECRET_VALUE')
+    }
+    expect(next).not.toHaveBeenCalled(); expect(fetchMock).not.toHaveBeenCalled()
+  })
+  it.each(['mode', 'engine', 'deactivate', 'settings', 'native', 'unbind'])('denies stale remote allows after %s change', async change => {
+    const h = await mount(); await jev(h)
+    let release!: (value: Response) => void, entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    vi.stubGlobal('fetch', vi.fn(() => { entered(); return new Promise<Response>(resolve => { release = resolve }) }))
+    const next = vi.fn(); const result = h.run('pwd', next)
+    await started
+    if (change === 'settings') await h.ctx.bashGuard.saveSettings({ ...h.ctx.bashGuard.getSettings(), apiKey: '' })
+    else if (change === 'native') h.append('sandbox/mode', { mode: 'read-only' })
+    else if (change === 'unbind') h.unbind()
+    else await h.update({ action: change, mode: '0000', engine: 'local', revision: 2 })
+    release(response())
+    expect((await result).error.message).toContain('changed during evaluation')
+    expect(next).not.toHaveBeenCalled()
   })
 })

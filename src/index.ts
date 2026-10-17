@@ -1,17 +1,21 @@
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { allows, classifyTool } from './classify.ts'
+import { posix as path } from 'node:path'
+import { DEFAULT_JEV_SETTINGS, evaluate, prepareState, publicSettings, settingsSchema, testSettings, validateSettings, type JevSettings, type JevSettingsRequest, type PublicJevSettings } from './jev.ts'
 
 export const name = 'bash-guard'
 export const inject = ['storageDomain', 'sessions', 'permissionPresets', 'sandboxPolicy', 'approval']
 export const BASH_GUARD_DENIED = 'BASH_GUARD_DENIED'
 const BASELINE = 'danger-full-access'
 const valid = (value: unknown): value is string => typeof value === 'string' && /^[0-7]{4}$(?![\s\S])/.test(value)
-export interface GuardRecord { mode: string; active: boolean; revision: number; presetSeq: number }
-export interface GuardUpdate { action: 'activate' | 'mode' | 'deactivate'; mode?: string; revision: number }
+export interface GuardRecord { mode: string; active: boolean; revision: number; presetSeq: number; engine: 'local' | 'jev' }
+export interface GuardDecision { source: 'local' | 'jev'; fallback: boolean; allowed: boolean }
+export interface GuardUpdate { action: 'activate' | 'mode' | 'deactivate' | 'engine'; mode?: string; engine?: 'local' | 'jev'; revision: number }
 export const recordSchema = {
   parse(value: any): GuardRecord {
     if (!value || !valid(value.mode) || typeof value.active !== 'boolean' || !Number.isSafeInteger(value.revision) || value.revision < 0 || !Number.isSafeInteger(value.presetSeq) || value.presetSeq < -1) throw new Error('Invalid stored Bash Guard configuration')
-    return { mode: value.mode, active: value.active, revision: value.revision, presetSeq: value.presetSeq }
+    if (value.engine !== undefined && !['local', 'jev'].includes(value.engine)) throw new Error('Invalid stored Bash Guard engine')
+    return { mode: value.mode, active: value.active, revision: value.revision, presetSeq: value.presetSeq, engine: value.engine ?? 'local' }
   },
 }
 function presetBoundary(session: any): number {
@@ -29,12 +33,12 @@ function presetBoundary(session: any): number {
 /** Standard Cordis service + source-mode Typert descriptors; the gateway supplies
  * the { ok, value } RPC envelope, not these methods. No session command transport. */
 export class BashGuardService extends TypertRemoteService {
-  constructor(ctx: any, private readonly readState: (id: string) => GuardRecord, private readonly mutate: (id: string, request: GuardUpdate) => Promise<GuardRecord>) {
+  constructor(ctx: any, private readonly readState: (id: string) => GuardRecord & { decision?: GuardDecision }, private readonly mutate: (id: string, request: GuardUpdate) => Promise<GuardRecord>, private readonly settings: { get: () => PublicJevSettings; save: (request: JevSettingsRequest & { revision: number }) => Promise<PublicJevSettings>; test: (request: JevSettingsRequest) => Promise<{ ok: true; model: string }> }) {
     super(ctx, 'bashGuard')
     // Invoke the installed standard-decorator API explicitly so both the host
     // transpiler and source-mode test runners discover the same descriptors.
-    for (const method of ['get', 'update'] as const) {
-      Remote(method)(this[method], {
+    for (const method of ['get', 'update', 'getSettings', 'saveSettings', 'testSettings'] as const) {
+      Remote(method)(this[method] as any, {
         kind: 'method', name: method, static: false, private: false,
         access: { has: (object: any) => method in object, get: (object: any) => object[method] },
         addInitializer: (initialize: (this: BashGuardService) => void) => initialize.call(this),
@@ -42,9 +46,11 @@ export class BashGuardService extends TypertRemoteService {
     }
   }
 
-  get(sessionId: string): GuardRecord { return this.readState(sessionId) }
-
+  get(sessionId: string): GuardRecord & { decision?: GuardDecision } { return this.readState(sessionId) }
   update(sessionId: string, request: GuardUpdate): Promise<GuardRecord> { return this.mutate(sessionId, request) }
+  getSettings(): PublicJevSettings { return this.settings.get() }
+  saveSettings(request: JevSettingsRequest & { revision: number }): Promise<PublicJevSettings> { return this.settings.save(request) }
+  testSettings(request: JevSettingsRequest): Promise<{ ok: true; model: string }> { return this.settings.test(request) }
 }
 
 export async function apply(ctx: any, config: { mode?: string } = {}): Promise<void> {
@@ -53,6 +59,12 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
   const domain = await ctx.storageDomain.open({ name: 'bash_guard', version: 1, layout: 'per-record', tables: { sessions: { valueSchema: recordSchema } } })
   ctx.effect(() => () => domain.close())
   const records = domain.table('sessions')
+  const settingsDomain = await ctx.storageDomain.open({ name: 'bash_guard_jev', version: 1, layout: 'per-record', tables: { settings: { valueSchema: settingsSchema } } })
+  ctx.effect(() => () => settingsDomain.close())
+  const settingsTable = settingsDomain.table('settings')
+  const readSettings = (): JevSettings => { const value = settingsTable.get('profile'); return value === undefined ? { ...DEFAULT_JEV_SETTINGS } : settingsSchema.parse(value) }
+  let settingsQueue: Promise<unknown> = Promise.resolve()
+  const decisions = new Map<string, GuardDecision>()
   const queues = new Map<string, Promise<unknown>>()
   const sessionId = (id: string) => {
     if (typeof id !== 'string' || !id.trim()) throw new Error('A session ID is required')
@@ -64,7 +76,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     ctx.approval.effectivePolicy(session) === 'never'
   const read = (id: string, session = ctx.sessions.get(sessionId(id))): GuardRecord => {
     const stored = records.get(id)
-    const state = stored === undefined ? { mode: fallback, active: false, revision: 0, presetSeq: -1 } : recordSchema.parse(stored)
+    const state: GuardRecord = stored === undefined ? { mode: fallback, active: false, revision: 0, presetSeq: -1, engine: 'local' } : recordSchema.parse(stored)
     // A read never resumes a session or acquires its persistence writer. An
     // unbound session cannot establish that its saved baseline still applies.
     if (!session) return state.active ? { ...state, active: false, revision: state.revision + 1 } : state
@@ -79,15 +91,21 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     void pending.finally(() => { if (queues.get(id) === pending) queues.delete(id) }).catch(() => {})
     return pending
   }
-  new BashGuardService(ctx, (id) => read(id), (id, request) => serialized(sessionId(id), async () => {
+  new BashGuardService(ctx, (id) => ({ ...read(id), ...(decisions.has(id) ? { decision: decisions.get(id)! } : {}) }), (id, request) => serialized(sessionId(id), async () => {
     // Resolve inside the queue: never retain a stale binding across mutations.
     const session = ctx.sessions.get(id)
     if (!session) throw new Error('Session is not live; open the session before changing Bash Guard')
     const state = read(id, session)
-    if (!request || !['activate', 'mode', 'deactivate'].includes(request.action)) throw new Error('Unknown guard operation')
+    if (!request || !['activate', 'mode', 'deactivate', 'engine'].includes(request.action)) throw new Error('Unknown guard operation')
     if (!Number.isSafeInteger(request.revision) || request.revision !== state.revision) throw new Error('Guard configuration changed; reopen the permission menu')
     if (state.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Guard revision exhausted')
     if (request.action === 'mode' && (!state.active || !valid(request.mode))) throw new Error('An active guard and four octal digits are required')
+    if (request.action === 'engine') {
+      if (!['local', 'jev'].includes(request.engine!)) throw new Error('Invalid guard engine')
+      await settingsQueue
+      if (read(id).revision !== state.revision || ctx.sessions.get(id) !== session) throw new Error('Guard configuration changed; reopen the permission menu')
+      if (request.engine === 'jev' && !readSettings().apiKey) throw new Error('Configure a Jev API key before selecting Jev')
+    }
     let previousPreset: string | undefined
     if (request.action === 'activate') {
       const baseline = ctx.permissionPresets.resolve(BASELINE)
@@ -107,10 +125,12 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       }
       const next = recordSchema.parse({
         mode: request.action === 'mode' ? request.mode : state.mode,
-        active: request.action !== 'deactivate', revision: state.revision + 1,
+        active: request.action === 'engine' ? state.active : request.action !== 'deactivate', revision: state.revision + 1,
+        engine: request.action === 'engine' ? request.engine : state.engine,
         presetSeq: presetBoundary(session),
       })
       await records.put(id, next)
+      decisions.delete(id)
     } catch (error) {
       if (previousPreset !== undefined) {
         try {
@@ -123,7 +143,22 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       throw error
     }
     return read(id)
-  }))
+  }), {
+    get: () => publicSettings(readSettings()),
+    save: (request) => {
+      const pending = settingsQueue.catch(() => {}).then(async () => {
+        const previous = readSettings()
+        if (!request || !Number.isSafeInteger(request.revision) || request.revision !== previous.revision) throw new Error('Jev settings changed; reopen settings')
+        if (previous.revision >= Number.MAX_SAFE_INTEGER) throw new Error('Jev settings revision exhausted')
+        const next = { ...validateSettings(request, previous), revision: previous.revision + 1 }
+        await settingsTable.put('profile', next)
+        return publicSettings(next)
+      })
+      settingsQueue = pending.catch(() => {})
+      return pending
+    },
+    test: async (request) => testSettings(validateSettings(request, readSettings())),
+  })
   ctx.on('tools/execute', async (exec: any, next: () => Promise<any>) => {
     const session = exec.agent?.session
     if (!session) return next()
@@ -134,8 +169,41 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     const workspace = session.header.cwd ?? process.cwd()
     const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {}
     const required = classifyTool(exec.name, args, { workspace, cwd: workspace })
-    if (required === undefined || allows(state.mode, required)) return next()
-    const message = `command blocked by bash safety policy (required=${required} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`
-    return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true, error: { message, info: { name: 'BashGuardError', code: BASH_GUARD_DENIED } } }
+    if (required === undefined) return next()
+    const denied = (message: string) => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true, error: { message, info: { name: 'BashGuardError', code: BASH_GUARD_DENIED } } })
+    let unreviewable = false
+    let decision: GuardDecision = { source: 'local', fallback: false, allowed: allows(state.mode, required) }
+    if (state.engine === 'jev') {
+      await settingsQueue
+      await queues.get(session.id)
+      const beforeRequest = read(session.id)
+      if (ctx.sessions.get(session.id) !== session || beforeRequest.revision !== state.revision || !beforeRequest.active) {
+        return denied('Bash Guard configuration changed before evaluation; retry with the current policy.')
+      }
+      const settings = readSettings()
+      const cwd = exec.name.toLowerCase() === 'bash' && typeof args.workdir === 'string' ? path.resolve(workspace, args.workdir) : workspace
+      const input = prepareState({ tool: exec.name, workspace, cwd, mode: state.mode, arguments: args })
+      if (input === undefined) {
+        // Redacted, oversized or incomplete input must never yield an allow,
+        // including when the user granted all local bits.
+        unreviewable = true
+        decision = { source: 'local', fallback: false, allowed: false }
+      } else {
+        try { decision = { source: 'jev', fallback: false, allowed: (await evaluate(settings, input)).allowed } }
+        catch { decision = { source: 'local', fallback: true, allowed: allows(state.mode, required) } }
+      }
+      // Wait for mutations begun during the request, then compare both revisions
+      // synchronously immediately before next(). Native invalidation counts too.
+      await queues.get(session.id)
+      await settingsQueue
+      const current = read(session.id)
+      if (ctx.sessions.get(session.id) !== session || current.revision !== state.revision || !current.active || readSettings().revision !== settings.revision) {
+        decisions.set(session.id, { ...decision, allowed: false })
+        return denied('Bash Guard configuration changed during evaluation; retry the operation with the current policy.')
+      }
+    }
+    decisions.set(session.id, decision)
+    if (decision.allowed) return next() // Never replace or override downstream denials.
+    return denied(`command blocked by bash safety policy (source=${decision.source}${decision.fallback ? ', fallback=local' : ''}; ${unreviewable ? 'reason=input-not-reviewable' : decision.source === 'jev' ? 'decision=deny' : `required=${required}`} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
   })
 }

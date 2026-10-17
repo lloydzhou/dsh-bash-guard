@@ -1,6 +1,18 @@
 // Plugin-owned dictionaries: the host locale service is the only language setting.
 export const BASH_GUARD_NS = 'bash-guard'
 export const zh = {
+  'engine.label': '判断方式', 'engine.local': '本地', 'engine.fallback': '最近一次判断已回退到本地规则',
+  'settings.title': 'Bash Guard 设置', 'settings.scope': 'Jev 配置由当前 profile 的会话共用；判断方式仅对当前会话生效。',
+  'settings.model': '模型', 'settings.apiKey': 'API 密钥', 'settings.keyConfigured': '已配置 · 留空保留原密钥', 'settings.keyMissing': '输入 API 密钥',
+  'settings.keyNote': '密钥不会回显。密钥以明文保存在本机配置档案中，并非加密保险库。',
+  'settings.clearKey': '保存时清除已存密钥', 'settings.advanced': '高级设置（可选）', 'settings.endpoint': '服务端点', 'settings.timeout': '超时时间（毫秒）',
+  'settings.endpointNote': '更改服务端点时，必须重新输入密钥。',
+  'settings.proxyUrl': 'HTTP 代理', 'settings.proxyNote': '仅用于 Jev 请求；留空则直连。127.0.0.1 等本地地址指运行 DSH 服务端的机器，而非浏览器所在机器。',
+  'settings.disclosure': 'Jev 会将命令和路径发送到此端点。写入或替换的文本内容不会发送；命令自身仍可能包含敏感内容。',
+  'settings.fallback': '请求失败或超时自动回退到本地规则；此版本不可更改。',
+  'settings.test': '测试连接', 'settings.save': '保存', 'settings.saveEnable': '保存并启用 Jev', 'settings.loading': '正在读取设置…', 'settings.testing': '正在测试草稿配置…', 'settings.saving': '正在保存…', 'settings.testSuccess': '连接成功。草稿尚未保存。',
+  'error.invalidSettings': '无效的 Jev 设置', 'error.settingsRequest': '无法读取 Jev 设置，请重试。',
+  'error.settingsSave': '保存失败。请检查配置；若设置已被更改，请关闭后重新打开并重试。', 'error.settingsTest': '连接失败。请检查端点、模型与密钥后重试。',
   'permission': '权限',
   'mode': '访问模式，当前：{name}',
   'guard.custom': 'Bash Guard 自定义',
@@ -44,6 +56,18 @@ export const zh = {
   'auto.confirm.acknowledge': '我已了解这些风险，并愿意继续', 'auto.confirm.enable': '启用 Auto review',
 }
 export const en = {
+  'engine.label': 'Review method', 'engine.local': 'Local', 'engine.fallback': 'The last review fell back to local rules',
+  'settings.title': 'Bash Guard settings', 'settings.scope': 'Configuration is shared across this profile. The review method applies only to this session.',
+  'settings.model': 'Model', 'settings.apiKey': 'API key', 'settings.keyConfigured': 'Configured · leave blank to keep', 'settings.keyMissing': 'Enter an API key',
+  'settings.keyNote': 'Stored keys are never displayed. The key is saved as plaintext in your local profile, not an encrypted vault.',
+  'settings.clearKey': 'Clear the saved key when saving', 'settings.advanced': 'Advanced settings (optional)', 'settings.endpoint': 'Endpoint', 'settings.timeout': 'Timeout (milliseconds)',
+  'settings.endpointNote': 'Re-enter the API key when changing the endpoint.',
+  'settings.proxyUrl': 'HTTP proxy', 'settings.proxyNote': 'Used only for Jev requests. Leave blank for a direct connection. Local addresses such as 127.0.0.1 refer to the machine running the DSH server, not the browser.',
+  'settings.disclosure': 'Jev sends commands and paths to this endpoint. Written or replacement text is excluded; commands themselves may still contain sensitive information.',
+  'settings.fallback': 'Failed or timed-out requests fall back to local rules. This cannot be changed in this version.',
+  'settings.test': 'Test connection', 'settings.save': 'Save', 'settings.saveEnable': 'Save and enable Jev', 'settings.loading': 'Loading settings…', 'settings.testing': 'Testing draft configuration…', 'settings.saving': 'Saving…', 'settings.testSuccess': 'Connected. Your draft has not been saved.',
+  'error.invalidSettings': 'Invalid Jev settings', 'error.settingsRequest': 'Could not load Jev settings. Try again.',
+  'error.settingsSave': 'Could not save. Check the configuration; if settings changed elsewhere, close and reopen this dialog before retrying.', 'error.settingsTest': 'Connection failed. Check the endpoint, model, and API key, then try again.',
   'permission': 'Permission',
   'mode': 'Access mode, current: {name}',
   'guard.custom': 'Bash Guard Custom',
