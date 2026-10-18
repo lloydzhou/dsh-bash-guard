@@ -128,6 +128,30 @@ function tokenize(script: string): Token[] | undefined {
 }
 
 /**
+ * Quote-aware syntax prescan. Single quotes are fully literal; double quotes
+ * suppress keywords/braces but the shell still expands `$` and backticks
+ * inside them. `literal` drops quote contents and backslash-escaped chars
+ * (keyword/brace checks); `expansible` keeps double-quote contents (expansion
+ * checks). Unterminated quotes are rejected later by tokenize().
+ */
+function quoteStrip(command: string): { literal: string; expansible: string } {
+  let literal = '', expansible = '', quote = ''
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!
+    if (quote) {
+      if (quote === '"' && ch === '\\') { literal += ' '; expansible += ' '; i += 1; continue }
+      if (ch === quote) { quote = ''; literal += ch; expansible += ch; continue }
+      if (quote === '"') { literal += ' '; expansible += ch; continue }
+      continue
+    }
+    if (ch === '\\') { literal += ' '; expansible += ' '; i += 1; continue }
+    if (ch === '"' || ch === "'") { quote = ch; literal += ch; expansible += ch; continue }
+    literal += ch; expansible += ch
+  }
+  return { literal, expansible }
+}
+
+/**
  * Accumulate command segments, pipelines, path scopes, redirections and execution.
  * Opaque substitutions/heredocs/dynamic command names fail closed. This cannot
  * prove the effects of arbitrary programs, aliases, symlinks or shell functions.
@@ -135,10 +159,13 @@ function tokenize(script: string): Token[] | undefined {
 export function classifyCommand(command: string, input?: ContextInput): Requirement {
   if (!command.trim()) return '0000'
   const ctx = context(input)
+  // Quoted segments are data, not syntax: single-quoted text never expands,
+  // double-quoted text cannot contain control flow but still expands $/backticks.
+  const { literal, expansible } = quoteStrip(command)
   // Do not pretend to expand arbitrary shell code, variables, or process substitution.
-  if (/\$\(|`|[<>]\(|<<|\$\{|\$(?!HOME(?:\W|$))[A-Za-z_]/.test(command)) return '7777'
+  if (/\$\(|`|[<>]\(|<<|\$\{|\$(?!HOME(?:\W|$))[A-Za-z_]/.test(expansible)) return '7777'
   // Branch-dependent cwd and shell control flow cannot be resolved by this scanner.
-  if (/\b(?:if|then|else|elif|fi|for|while|until|case|esac|function)\b|[{}]/.test(command) || /\bcd\b/.test(command) && /\|\||(?:^|[^&])&(?:[^&]|$)|[()]/.test(command)) return '7777'
+  if (/\b(?:if|then|else|elif|fi|for|while|until|case|esac|function)\b|[{}]/.test(literal) || /\bcd\b/.test(literal) && /\|\||(?:^|[^&])&(?:[^&]|$)|[()]/.test(literal)) return '7777'
   const tokens = tokenize(command)
   if (!tokens) return '7777'
   let mask = 0

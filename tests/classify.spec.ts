@@ -109,6 +109,21 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
   it.each(['cat "$UNRESOLVED/file"', '$(unknown)', 'cat <(unknown)', 'echo `unknown`', 'cat <<EOF\nx\nEOF', 'cat "unterminated', 'PATH=/other custom-program'])('fails closed on opaque shell syntax: %s', source => {
     expect(command(source)).toBe('7777')
   })
+  it('treats quoted keywords and braces as literal text, not shell syntax', () => {
+    expect(command('git commit -m "fix for loop bug"')).toBe('0003')
+    expect(command('grep "for" README.md')).toBe('0004')
+    expect(command('echo \'{"a":1}\' > /tmp/out.json')).toBe('0002')
+    expect(command('oapi fetch --body \'{"a":1}\'')).toBe('0001')
+    expect(command("echo '$HOME'")).toBe('0400')
+    expect(command('echo "$HOME"')).toBe('0400')
+  })
+  it('still fails closed on unquoted control flow and active expansion', () => {
+    expect(command('if true; then touch /tmp/x; fi')).toBe('7777')
+    expect(command('echo {a,b}')).toBe('7777')
+    expect(command('exit "$code"')).toBe('7777')
+    expect(command('echo "pre $(cmd)"')).toBe('7777')
+    expect(command('echo `x`')).toBe('7777')
+  })
   it('uses bash workdir without turning an external directory into the workspace', () => {
     expect(tool('bash', { command: 'cat README.md', workdir: '/Users/other' })).toBe('0400')
     expect(tool('bash', { command: 'cat README.md', workdir: 'src' })).toBe('0004')
