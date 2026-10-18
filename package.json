@@ -30,7 +30,8 @@
     "lib",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "dsh": {
     "bundle": {

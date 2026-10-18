@@ -1,4 +1,6 @@
-# 实际验证记录
+# 历史验证记录
+
+> 以下是 2026-10-16 早期实现的验证，不代表当前 Full access / Jev 版本已经完成同等端到端验收。特别是“始终保留 workspace-write 沙箱”和方向键修改数值的描述已不适用。当前安全边界见 README 与 SECURITY.md。
 
 2026-10-16，/usr/local/bin/dsh --profile web --port 3082 --no-open，独立测试进程，不替换用户其他实例。
 

@@ -29,6 +29,7 @@ export function validateSettings(value: JevSettingsRequest, previous = DEFAULT_J
     let proxy: URL
     try { proxy = new URL(proxyUrl) } catch { throw new Error('Invalid HTTP proxy URL') }
     if (!['http:', 'https:'].includes(proxy.protocol) || proxy.username || proxy.password || proxy.search || proxy.hash || proxy.pathname !== '/') throw new Error('Proxy requires an HTTP(S) URL without credentials or path')
+    if (url.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(proxy.hostname)) throw new Error('HTTP loopback endpoints require a loopback proxy or a direct connection')
     proxyUrl = proxy.origin
   }
   return { endpoint: url.href, model: value.model, timeoutMs: value.timeoutMs, proxyUrl, apiKey, revision: previous.revision }
@@ -73,7 +74,7 @@ export function prepareState(operation: JevOperation): string | undefined {
   const args: Record<string, unknown> = {}
   // Explicit metadata projection: never serialize write contents, edit strings,
   // notebook source, descriptions, or other arbitrary tool payload fields.
-  const fields = tool === 'bash' ? ['command', 'workdir'] : ['file_path', 'path', 'notebook_path', 'pattern', 'include', 'offset', 'limit', 'replace_all']
+  const fields = tool === 'bash' ? ['command', 'workdir'] : ['file_path', 'path', 'notebook_path', ...(tool === 'glob' ? ['pattern'] : []), 'include', 'offset', 'limit', 'replace_all']
   for (const key of fields) if (operation.arguments[key] !== undefined) {
     const value = operation.arguments[key]
     if (!['string', 'number', 'boolean'].includes(typeof value) || ['command', 'workdir', 'file_path', 'path', 'notebook_path', 'pattern', 'include'].includes(key) && typeof value !== 'string' || typeof value === 'number' && !Number.isFinite(value) || typeof value === 'string' && (sensitive(value) || /[\x00]|\[(?:REDACTED|TRUNCATED)\]/i.test(value))) return undefined

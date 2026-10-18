@@ -50,6 +50,14 @@ describe('Jev configuration and strict response contract', () => {
 })
 
 describe('privacy-preserving exact operation', () => {
+  it('omits private grep search text but retains glob path patterns', () => {
+    const grep = prepareState({...operation, tool:'grep', arguments:{path:'/workspace',pattern:'customer-123-private'}})!
+    expect(grep).not.toContain('customer-123-private')
+    expect(prepareState({...operation,tool:'glob',arguments:{pattern:'../*.ts'}})).toContain('../*.ts')
+  })
+  it('rejects a remote proxy for plaintext loopback endpoints', () => {
+    expect(()=>validateSettings({...configured,endpoint:'http://127.0.0.1:8000',proxyUrl:'http://proxy.example.com:8080'})).toThrow('loopback')
+  })
   it('preserves command/workdir and separates actual cwd from workspace', () => {
     const state = JSON.parse(prepareState({ ...operation, arguments: { command: 'PYTHONDONTWRITEBYTECODE=1 pytest; result=$?; exit $result', workdir: 'sub', description: 'private' } })!)
     expect(state.cwd).toBe('/workspace/sub')

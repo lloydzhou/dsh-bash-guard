@@ -4,3 +4,12 @@ lib/
 *.tgz
 .DS_Store
 coverage/
+# Local credentials, diagnostic captures, and personal profile configuration.
+.env
+.env.*
+!.env.example
+*.log
+*.jsonl
+.playwright-mcp/
+/screenshots/
+/pnpm-lock.yaml
