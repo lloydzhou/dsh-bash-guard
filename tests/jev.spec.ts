@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_JEV_SETTINGS, evaluate, parseResponse, prepareState, publicSettings, sensitive, settingsSchema, testSettings, validateSettings } from '../src/jev.ts'
+import { DEFAULT_JEV_SETTINGS, evaluate, noulAnswer, parseRequirement, prepareState, publicSettings, questionKeys, sensitive, settingsSchema, testSettings, validateSettings } from '../src/jev.ts'
 
 const configured = { ...DEFAULT_JEV_SETTINGS, apiKey: 'fake-test-key' }
-const answer = (choice = 'allow', probability: unknown = 0.99) => ({ answers: { action: { type: 'choice', choice, probabilities: { [choice]: probability } } } })
-const operation = { tool: 'bash', workspace: '/workspace', cwd: '/workspace/sub', mode: '4667', arguments: { command: 'ls ../' } }
+const answer = (values: Record<string, number> = {}) => noulAnswer(values)
+const operation = { tool: 'bash', workspace: '/workspace', cwd: '/workspace/sub', arguments: { command: 'ls ../' } }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('Jev configuration and strict response contract', () => {
@@ -41,11 +41,22 @@ describe('Jev configuration and strict response contract', () => {
   it.each([{ model: '' }, { model: 'with spaces' }, { timeoutMs: 99 }, { timeoutMs: 30001 }, { timeoutMs: 100.1 }, { apiKey: 'bad\nkey' }])('validates configuration %j', patch => {
     expect(() => validateSettings({ ...configured, ...patch })).toThrow()
   })
-  it.each(['allow', 'deny'])('accepts only validated %s choices', choice => {
-    expect(parseResponse(answer(choice))).toEqual({ allowed: choice === 'allow', probability: 0.99 })
+  it('maps twelve calibrated nouls to the same four-digit requirement format', () => {
+    expect(questionKeys()).toHaveLength(12)
+    expect(parseRequirement(answer())).toBe('0000')
+    expect(parseRequirement(answer({ 'system.read': 0.9, 'system.write': 0.1, 'external.read': 0.9, 'external.write': 0.9, 'workspace.read': 0.9, 'workspace.write': 0.9, 'workspace.execute': 0.9 }))).toBe('4607')
+    expect(parseRequirement(answer({ 'system.execute': 0.5 }))).toBe('1000')
+    expect(parseRequirement(answer({ 'network.read': 0.49, 'network.write': 0.51 }))).toBe('0020')
   })
-  it.each([answer('review'), answer('allow', -1), answer('allow', 1.01), answer('allow', '0.9'), answer('allow', Infinity), {}, { answers: { action: { type: 'text', choice: 'allow', probabilities: { allow: 1 } } } }])('rejects invalid response %j', response => {
-    expect(() => parseResponse(response)).toThrow('JEV_')
+  it.each([
+    { answers: {} },
+    { answers: { 'system.read': { type: 'choice', choice: 'x', probabilities: { x: 1 } } } },
+    { answers: Object.fromEntries(questionKeys().slice(1).map(key => [key, { type: 'noul', noul: 0.5 }])) },
+    { answers: Object.fromEntries(questionKeys().map(key => [key, { type: 'noul', noul: key === 'system.read' ? 1.01 : 0.1 }])) },
+    { answers: Object.fromEntries(questionKeys().map(key => [key, { type: 'noul', noul: '0.5' }])) },
+    {},
+  ])('rejects invalid noul response %j', response => {
+    expect(() => parseRequirement(response)).toThrow('JEV_')
   })
 })
 
@@ -58,10 +69,11 @@ describe('privacy-preserving exact operation', () => {
   it('rejects a remote proxy for plaintext loopback endpoints', () => {
     expect(()=>validateSettings({...configured,endpoint:'http://127.0.0.1:8000',proxyUrl:'http://proxy.example.com:8080'})).toThrow('loopback')
   })
-  it('preserves command/workdir and separates actual cwd from workspace', () => {
+  it('preserves command/workdir and separates actual cwd from workspace without the granted mode', () => {
     const state = JSON.parse(prepareState({ ...operation, arguments: { command: 'PYTHONDONTWRITEBYTECODE=1 pytest; result=$?; exit $result', workdir: 'sub', description: 'private' } })!)
     expect(state.cwd).toBe('/workspace/sub')
     expect(state.workspace_path).toBe('/workspace')
+    expect(state.permission_policy.allowed_mode).toBeUndefined()
     expect(state.permission_policy.scope_definitions.external).toContain('require the corresponding workspace bits')
     expect(state.permission_policy.scope_definitions.system).toContain('even inside workspace')
     expect(state.operation.arguments.command).toBe('PYTHONDONTWRITEBYTECODE=1 pytest; result=$?; exit $result')
@@ -89,11 +101,11 @@ describe('privacy-preserving exact operation', () => {
 })
 
 describe('bounded Jev transport with no real network', () => {
-  it('sends upstream API format with redirects forbidden and bearer only in header', async () => {
+  it('sends twelve noul questions with redirects forbidden and bearer only in header', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(answer())))
     vi.stubGlobal('fetch', fetchMock)
     const state = prepareState(operation)!
-    expect(await evaluate(configured, state)).toEqual({ allowed: true, probability: 0.99 })
+    expect(await evaluate(configured, state)).toEqual({ required: '0000' })
     const [url, init] = fetchMock.mock.calls[0] as any
     expect(url).toBe(configured.endpoint)
     expect(init.redirect).toBe('error')
@@ -101,10 +113,13 @@ describe('bounded Jev transport with no real network', () => {
     expect(init.headers.Authorization).toBe('Bearer fake-test-key')
     const body = JSON.parse(init.body)
     expect(body.state).toBe(state)
-    expect(body.questions.action.type).toBe('choice')
+    const questions = Object.values<any>(body.questions)
+    expect(questions).toHaveLength(12)
+    expect(questions.every((question: any) => question.type === 'noul')).toBe(true)
+    expect(body.questions['system.execute'].instructions).toContain('system scope')
     expect(init.body).not.toContain('fake-test-key')
   })
-  it.each([() => { throw new Error('Bearer fake-test-key: https://private/') }, () => new Response('fake-test-key', { status: 500 }), () => new Response('not json fake-test-key'), () => new Response(JSON.stringify(answer('review'))), () => new Response('x', { headers: { 'Content-Length': '999999' } }), () => new Response('x'.repeat(65537))])('sanitizes all network/body failures', async response => {
+  it.each([() => { throw new Error('Bearer fake-test-key: https://private/') }, () => new Response('fake-test-key', { status: 500 }), () => new Response('not json fake-test-key'), () => new Response('{"answers":{"action":{"type":"noul","noul":0.9}}}'), () => new Response('x', { headers: { 'Content-Length': '999999' } }), () => new Response('x'.repeat(65537))])('sanitizes all network/body failures', async response => {
     vi.stubGlobal('fetch', vi.fn(async () => response()))
     await expect(evaluate(configured, prepareState(operation)!)).rejects.toThrow(/^JEV_(HTTP_500|NETWORK_OR_RESPONSE|INVALID_RESPONSE)$/)
   })
@@ -125,11 +140,12 @@ describe('bounded Jev transport with no real network', () => {
     await result
   })
   it('tests only fixed innocuous operation and returns configured model, not arbitrary response data', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ...answer('deny'), model: 'secret echoed by server' })))
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ...noulAnswer(), model: 'secret echoed by server' })))
     vi.stubGlobal('fetch', fetchMock)
     expect(await testSettings(configured)).toEqual({ ok: true, model: 'jev-latest' })
     const state = JSON.parse(JSON.parse((fetchMock.mock.calls[0] as any)[1].body).state)
     expect(state.operation.arguments).toEqual({ command: 'pwd' })
     expect(state.workspace_path).toBe('/workspace')
+    expect(state.permission_policy.allowed_mode).toBeUndefined()
   })
 })

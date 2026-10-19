@@ -171,8 +171,11 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     const required = classifyTool(exec.name, args, { workspace, cwd: workspace })
     if (required === undefined) return next()
     const denied = (message: string) => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true, error: { message, info: { name: 'BashGuardError', code: BASH_GUARD_DENIED } } })
-    let unreviewable = false
-    let decision: GuardDecision = { source: 'local', fallback: false, allowed: allows(state.mode, required) }
+    // 7777 grants every bit: fully allow without any review, Jev or local.
+    if (state.mode === '7777') return next()
+    const localAllowed = allows(state.mode, required)
+    let finalRequired = required
+    let decision: GuardDecision = { source: 'local', fallback: false, allowed: localAllowed }
     if (state.engine === 'jev') {
       await settingsQueue
       await queues.get(session.id)
@@ -182,16 +185,14 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       }
       const settings = readSettings()
       const cwd = exec.name.toLowerCase() === 'bash' && typeof args.workdir === 'string' ? path.resolve(workspace, args.workdir) : workspace
-      const input = prepareState({ tool: exec.name, workspace, cwd, mode: state.mode, arguments: args })
-      if (input === undefined) {
-        // Redacted, oversized or incomplete input must never yield an allow,
-        // including when the user granted all local bits.
-        unreviewable = true
-        decision = { source: 'local', fallback: false, allowed: false }
-      } else {
-        try { decision = { source: 'jev', fallback: false, allowed: (await evaluate(settings, input)).allowed } }
-        catch { decision = { source: 'local', fallback: true, allowed: allows(state.mode, required) } }
-      }
+      const input = prepareState({ tool: exec.name, workspace, cwd, arguments: args })
+      // Suppressed input (secrets, oversized, unparseable) never leaves the
+      // machine: like any Jev outage, the local bit rules decide.
+      decision = input === undefined
+        ? { source: 'local', fallback: true, allowed: localAllowed }
+        : await evaluate(settings, input).then(
+            result => { finalRequired = result.required; return { source: 'jev', fallback: false, allowed: allows(state.mode, result.required) } },
+            () => ({ source: 'local', fallback: true, allowed: localAllowed }))
       // Wait for mutations begun during the request, then compare both revisions
       // synchronously immediately before next(). Native invalidation counts too.
       await queues.get(session.id)
@@ -204,6 +205,9 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     }
     decisions.set(session.id, decision)
     if (decision.allowed) return next() // Never replace or override downstream denials.
-    return denied(`command blocked by bash safety policy (source=${decision.source}${decision.fallback ? ', fallback=local' : ''}; ${unreviewable ? 'reason=input-not-reviewable' : decision.source === 'jev' ? 'decision=deny' : `required=${required}`} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
+    // Both engines report the same artifact: a required-mode number that the
+    // shared bit comparison evaluated against the configured mode.
+    const detail = decision.fallback ? ', fallback=local' : decision.source === 'jev' ? ', decision=deny' : ''
+    return denied(`command blocked by bash safety policy (source=${decision.source}${detail}; required=${finalRequired} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
   })
 }

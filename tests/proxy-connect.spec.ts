@@ -9,7 +9,7 @@ describe('real local HTTP CONNECT proxy',()=>{
   const target=createServer((req,res)=>{
    expect(req.headers.authorization).toBe('Bearer fake-local-key')
    res.setHeader('Content-Type','application/json')
-   res.end(JSON.stringify({answers:{action:{type:'choice',choice:'allow',probabilities:{allow:1}}}}))
+   res.end(JSON.stringify({answers:Object.fromEntries(['system','external','network','workspace'].flatMap(s=>['read','write','execute'].map(b=>[`${s}.${b}`,{type:'noul',noul:.1}])))}))
   })
   let tunnels=0
   const proxy=createServer()
@@ -27,7 +27,7 @@ describe('real local HTTP CONNECT proxy',()=>{
   proxy.listen(0,'127.0.0.1');await once(proxy,'listening')
   try{
    const result=await evaluate({...DEFAULT_JEV_SETTINGS,apiKey:'fake-local-key',endpoint:`http://127.0.0.1:${(target.address() as any).port}/v1/systemone`,proxyUrl:`http://127.0.0.1:${(proxy.address() as any).port}`},'fixed test')
-   expect(result.allowed).toBe(true);expect(tunnels).toBe(1)
+   expect(result.required).toBe('0000');expect(tunnels).toBe(1)
   }finally{target.closeAllConnections();target.close();proxy.close()}
  })
 })

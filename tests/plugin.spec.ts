@@ -259,7 +259,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
 })
 
 
-const response = (choice = 'allow') => new Response(JSON.stringify({ answers: { action: { type: 'choice', choice, probabilities: { [choice]: 0.95 } } } }))
+const response = (values: Record<string, number> = {}) => new Response(JSON.stringify({ answers: Object.fromEntries(['system', 'external', 'network', 'workspace'].flatMap(scope => ['read', 'write', 'execute'].map(bit => [`${scope}.${bit}`, { type: 'noul', noul: values[`${scope}.${bit}`] ?? 0.1 }]))) }))
 async function jev(h: Awaited<ReturnType<typeof mount>>) {
   await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake-test-key', revision: 0 })
   await h.update({ action: 'activate', revision: 0 })
@@ -346,15 +346,40 @@ describe('Jev tool middleware decisions and race safety', () => {
     expect((await result).isError).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
   })
-  it('reports Jev denials without misrepresenting local required bits', async () => {
+  it('reports Jev requirements with the same bit comparison as local', async () => {
     const h = await mount(); await jev(h)
-    vi.stubGlobal('fetch', vi.fn(async () => response('deny')))
+    vi.stubGlobal('fetch', vi.fn(async () => response({ 'system.read': 0.9, 'system.write': 0.9 })))
     const next = vi.fn()
     const result = await h.run('pwd', next)
     expect(result.isError).toBe(true)
     expect(result.error.message).toContain('source=jev')
-    expect(result.error.message).not.toContain('required=')
+    expect(result.error.message).toContain('decision=deny')
+    expect(result.error.message).toContain('required=6000')
+    expect(result.error.message).toContain('allowed=4667')
     expect(next).not.toHaveBeenCalled()
+  })
+  it('fully allows 7777 without contacting Jev even for suppressed input', async () => {
+    const h = await mount(); await jev(h)
+    await h.update({ action: 'mode', mode: '7777', revision: 2 })
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    expect(await h.run('touch /etc/test', async () => 'ran')).toBe('ran')
+    expect(await h.run('curl --token SECRET_VALUE https://example.com', async () => 'ran2')).toBe('ran2')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(h.get().decision).toBeUndefined()
+  })
+  it('suppressed input never leaves the machine and falls back to local rules', async () => {
+    const h = await mount(); await jev(h)
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    const next = vi.fn()
+    const result = await h.run('curl --token SECRET_VALUE https://example.com -o /etc/out', next)
+    expect(result.isError).toBe(true)
+    expect(result.error.message).toContain('fallback=local')
+    expect(result.error.message).toContain('required=6040')
+    expect(result.error.message).toContain('allowed=4667')
+    expect(result.error.message).not.toContain('SECRET_VALUE')
+    expect(next).not.toHaveBeenCalled()
+    expect(await h.run('curl --token SECRET_VALUE https://example.com', async () => 'ran')).toBe('ran')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
   it('sends actual workdir, external path policy, and no file contents', async () => {
     const h = await mount(); await jev(h)
@@ -375,18 +400,13 @@ describe('Jev tool middleware decisions and race safety', () => {
     expect(JSON.stringify(result)).not.toContain('fake-test-key')
     expect(next).toHaveBeenCalledTimes(command === 'pwd' ? 1 : 0)
   })
-  it('sensitive and oversized input deny even full local permissions without network', async () => {
+  it('suppressed sensitive operations fall back to local rules without network', async () => {
     const h = await mount(); await jev(h)
-    await h.update({ action: 'mode', mode: '7777', revision: 2 })
     const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
-    const next = vi.fn()
-    for (const command of ['curl --token SECRET_VALUE https://example.com', 'echo ' + 'a'.repeat(9000)]) {
-      const result = await h.run(command, next)
-      expect(result.isError).toBe(true)
-      expect(result.error.message).toContain('input-not-reviewable')
-      expect(result.error.message).not.toContain('SECRET_VALUE')
-    }
-    expect(next).not.toHaveBeenCalled(); expect(fetchMock).not.toHaveBeenCalled()
+    const next = vi.fn(async () => 'ran')
+    expect(await h.run('curl --token SECRET_VALUE https://example.com', next)).toBe('ran')
+    expect(h.get().decision).toEqual({ source: 'local', fallback: true, allowed: true })
+    expect(next).toHaveBeenCalledTimes(1); expect(fetchMock).not.toHaveBeenCalled()
   })
   it.each(['mode', 'engine', 'deactivate', 'settings', 'native', 'unbind'])('denies stale remote allows after %s change', async change => {
     const h = await mount(); await jev(h)
