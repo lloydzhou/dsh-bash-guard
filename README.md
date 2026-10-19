@@ -189,7 +189,7 @@ Jev 与本地规则输出**同一种东西：`required` 权限数字**，最终�
 - **激活会提高原生权限。** 风险确认后选择 `danger-full-access` 预设，由 Guard 限制已支持的操作。要求该预设为 `approval=never`，并通过宿主 sandboxPolicy 与 approval 服务核验会话实际状态；不符合则拒绝激活并回退。`never` 表示不会弹审批，其他原生规则要求审批的操作会被拒绝，而不是自动批准。旧版 workspace-write 基线的已激活记录不会静默升级，需要重新激活。
 - **不覆盖所有工具。** 未识别的工具不会自动被本插件拦截，仍依赖宿主策略。
 - **不保证符号链接与动态路径隔离。** Full access 不提供工作区沙箱边界，不能依赖词法分类器隔离实际文件系统、网络或子进程。
-- **不保证子代理继承。** 跨代理任务不能假定自动沿用父会话的 Guard 配置。
+- **子代理继承父会话配置。** subagent 通过 `session.header.parentSession` 沿父链继承最近的激活 Guard（mode + 引擎），只读生效、不落盘；父链断裂或祖先未激活时回到未保护状态。会话无记录且无激活祖先时不受 Guard 限制——依赖 Guard 约束时请保持父会话激活。
 - **不是 Bash Guard Rust 运行时。** 本插件独立适配了可选 Jev API 决策层，但没有集成 Claude/Codex Hook 或 Rust 审计日志功能，也不宣称相同的安全保证。
 
 需要报告问题？请附上脱敏后的命令、四位模式、预期与实际结果，在 [Issues](https://github.com/lloydzhou/dsh-bash-guard/issues) 中反馈。不要提交凭据或私有文件内容。

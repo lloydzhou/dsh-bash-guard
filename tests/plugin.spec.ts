@@ -15,6 +15,7 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
   const session = { id: 'test-session', header: { cwd: '/Users/test/project' }, events: [] as any[], snapshotEvents() { return [...this.events] } }
   const append = (type: string, data: any) => session.events.push({ type, data, seq: session.events.length })
   let live: any = session, puts = 0, selections = 0
+  const extraSessions = new Map<string, any>()
   let beforePut = async () => {}
   ctx.provide('storageDomain', { open: async (options: any) => {
     expect(options.version).toBe(1)
@@ -24,7 +25,7 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
       return { get: (id: string) => map.get(id), put: async (id: string, value: any) => { if (map === records) { await beforePut(); puts++ }; map.set(id, value) } }
     }, close() {} }
   } })
-  ctx.provide('sessions', { get: (id: string) => id === session.id ? live : undefined })
+  ctx.provide('sessions', { get: (id: string) => (id === session.id ? live : extraSessions.get(id)) })
   ctx.provide('permissionPresets', {
     resolve: (name: string) => {
       if (!['workspace-write', 'danger-full-access', 'read-only'].includes(name)) throw new Error('Unknown native preset')
@@ -38,12 +39,23 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
   await apply(ctx)
   const get = () => ctx.bashGuard.get(session.id)
   const update = (request: any) => ctx.bashGuard.update(session.id, request)
-  const run = (command: string, next: any, name = 'bash', args: any = {}) => {
+  const run = (command: string, next: any, name = 'bash', args: any = {}, agent: any = { session }) => {
     const listeners = [...ctx.events.dispatch('emit', ['tools/execute'])]
     expect(listeners).toHaveLength(1)
-    return listeners[0]({ agent: { session }, name, arguments: { command, ...args } }, next)
+    return listeners[0]({ agent, name, arguments: { command, ...args } }, next)
   }
-  return { ctx, session, append, update, get, run, unbind: () => { live = undefined },
+  const child = (overrides: any = {}) => {
+    const node = {
+      id: overrides.id ?? 'child-session',
+      header: { cwd: '/Users/test/project', ...overrides.header },
+      events: [] as any[],
+      snapshotEvents() { return [...this.events] },
+    }
+    extraSessions.set(node.id, node)
+    return node
+  }
+  const runAs = (agent: any, command: string, next: any, name = 'bash', args: any = {}) => run(command, next, name, args, { session: agent })
+  return { ctx, session, append, update, get, run, runAs, child, unbind: () => { live = undefined },
     counts: () => ({ puts, selections }), delayPut: (fn: () => Promise<void>) => { beforePut = fn } }
 }
 
@@ -422,5 +434,45 @@ describe('Jev tool middleware decisions and race safety', () => {
     release(response())
     expect((await result).error.message).toContain('changed during evaluation')
     expect(next).not.toHaveBeenCalled()
+  })
+})
+
+describe('subagent guard inheritance', () => {
+  it('child sessions inherit the nearest active parent guard read-only', async () => {
+    const h = await mount()
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toBe('ran')
+    await h.update({ action: 'activate', revision: 0 })
+    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toMatchObject({ isError: true })
+    expect(await h.runAs(child, 'pwd', async () => 'ok')).toBe('ok')
+  })
+  it('inheritance never persists a child record and follows mode changes', async () => {
+    const h = await mount()
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    await h.update({ action: 'activate', revision: 0 })
+    await h.update({ action: 'mode', mode: '7777', revision: 1 })
+    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toBe('ran')
+    expect(h.counts().puts).toBe(2)
+  })
+  it('walks grandparent chains and loses inheritance when the chain breaks', async () => {
+    const h = await mount()
+    const mid = h.child({ id: 'mid', header: { parentSession: 'test-session', origin: 'subagent' } })
+    const leaf = h.child({ header: { parentSession: 'mid', origin: 'subagent' } })
+    await h.update({ action: 'activate', revision: 0 })
+    expect(await h.runAs(leaf, 'touch /etc/test', async () => 'ran')).toMatchObject({ isError: true })
+    const orphan = h.child({ id: 'orphan', header: { parentSession: 'gone', origin: 'subagent' } })
+    expect(await h.runAs(orphan, 'touch /etc/test', async () => 'ran')).toBe('ran')
+  })
+  it('denies child Jev operations when the inherited parent policy changes mid-flight', async () => {
+    const h = await mount(); await jev(h)
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    let release!: (value: Response) => void, entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    vi.stubGlobal('fetch', vi.fn(() => { entered(); return new Promise<Response>(resolve => { release = resolve }) }))
+    const result = h.runAs(child, 'touch /etc/test', vi.fn())
+    await started
+    await h.update({ action: 'mode', mode: '0000', revision: 2 })
+    release(response())
+    expect((await result).error.message).toContain('changed during evaluation')
   })
 })

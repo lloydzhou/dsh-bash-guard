@@ -164,13 +164,54 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     if (!session) return next()
     // Observe writes already in flight before making a permission decision.
     await queues.get(session.id)
-    const state = read(session.id, session)
+    let state = read(session.id, session)
+    // Subagent executions share this listener with their own session id, which
+    // never has a stored record. Walk header.parentSession to the nearest
+    // active ancestor guard and apply it read-only: inherited state is never
+    // persisted and carries no revision of its own.
+    let inherited: { parentId: string; revision: number; mode: string; engine: 'local' | 'jev' } | undefined
+    if (!state.active) {
+      let header = session.header
+      for (let depth = 0; header && depth < 16; depth += 1) {
+        const parentId: unknown = header.parentSession
+        if (typeof parentId !== 'string' || !parentId) break
+        const parent = ctx.sessions.get(parentId)
+        if (!parent) break
+        const parentState = read(parentId, parent)
+        if (parentState.active) {
+          state = parentState
+          inherited = { parentId, revision: parentState.revision, mode: parentState.mode, engine: parentState.engine }
+          break
+        }
+        header = parent.header
+      }
+    }
     if (!state.active) return next()
     const workspace = session.header.cwd ?? process.cwd()
     const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {}
     const required = classifyTool(exec.name, args, { workspace, cwd: workspace })
     if (required === undefined) return next()
     const denied = (message: string) => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true, error: { message, info: { name: 'BashGuardError', code: BASH_GUARD_DENIED } } })
+    const policyStillCurrent = (): boolean => {
+      if (!inherited) {
+        const current = read(session.id)
+        return ctx.sessions.get(session.id) === session && current.revision === state.revision && current.active
+      }
+      let header = session.header
+      for (let depth = 0; header && depth < 16; depth += 1) {
+        const parentId: unknown = header.parentSession
+        if (typeof parentId !== 'string' || !parentId) return false
+        const parent = ctx.sessions.get(parentId)
+        if (!parent) return false
+        const parentState = read(parentId, parent)
+        if (parentState.active) {
+          return parentState.revision === inherited.revision
+            && parentState.mode === inherited.mode && parentState.engine === inherited.engine
+        }
+        header = parent.header
+      }
+      return false
+    }
     // 7777 grants every bit: fully allow without any review, Jev or local.
     if (state.mode === '7777') return next()
     const localAllowed = allows(state.mode, required)
@@ -179,8 +220,7 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     if (state.engine === 'jev') {
       await settingsQueue
       await queues.get(session.id)
-      const beforeRequest = read(session.id)
-      if (ctx.sessions.get(session.id) !== session || beforeRequest.revision !== state.revision || !beforeRequest.active) {
+      if (!policyStillCurrent()) {
         return denied('Bash Guard configuration changed before evaluation; retry with the current policy.')
       }
       const settings = readSettings()
@@ -193,12 +233,12 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
         : await evaluate(settings, input).then(
             result => { finalRequired = result.required; return { source: 'jev', fallback: false, allowed: allows(state.mode, result.required) } },
             () => ({ source: 'local', fallback: true, allowed: localAllowed }))
-      // Wait for mutations begun during the request, then compare both revisions
-      // synchronously immediately before next(). Native invalidation counts too.
+      // Wait for mutations begun during the request, then re-resolve the whole
+      // policy synchronously immediately before next(): own revision for top
+      // level sessions, the inherited ancestor chain for delegated children.
       await queues.get(session.id)
       await settingsQueue
-      const current = read(session.id)
-      if (ctx.sessions.get(session.id) !== session || current.revision !== state.revision || !current.active || readSettings().revision !== settings.revision) {
+      if (!policyStillCurrent() || readSettings().revision !== settings.revision) {
         decisions.set(session.id, { ...decision, allowed: false })
         return denied('Bash Guard configuration changed during evaluation; retry the operation with the current policy.')
       }
