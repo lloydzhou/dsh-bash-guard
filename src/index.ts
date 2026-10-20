@@ -1,7 +1,9 @@
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, join, posix as path } from 'node:path'
 import { allows, classifyTool } from './classify.ts'
-import { posix as path } from 'node:path'
-import { DEFAULT_JEV_SETTINGS, evaluate, prepareState, publicSettings, settingsSchema, testSettings, validateSettings, type JevSettings, type JevSettingsRequest, type PublicJevSettings } from './jev.ts'
+import { DEFAULT_JEV_SETTINGS, evaluate, prepareState, publicSettings, sensitive, settingsSchema, testSettings, validateSettings, type JevSettings, type JevSettingsRequest, type PublicJevSettings } from './jev.ts'
 
 export const name = 'bash-guard'
 export const inject = ['storageDomain', 'sessions', 'permissionPresets', 'sandboxPolicy', 'approval']
@@ -53,9 +55,12 @@ export class BashGuardService extends TypertRemoteService {
   testSettings(request: JevSettingsRequest): Promise<{ ok: true; model: string }> { return this.settings.test(request) }
 }
 
-export async function apply(ctx: any, config: { mode?: string } = {}): Promise<void> {
+export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 'all' | 'off' | boolean; auditLog?: string } = {}): Promise<void> {
   const fallback = config.mode ?? '4667'
   if (!valid(fallback)) throw new Error('bash-guard: expected four octal digits')
+  const auditLevel = config.audit === true ? 'all' : config.audit === false ? 'off' : config.audit ?? 'deny'
+  if (!['deny', 'all', 'off'].includes(auditLevel)) throw new Error("bash-guard: audit must be 'deny', 'all' or 'off'")
+  if (config.auditLog !== undefined && (typeof config.auditLog !== 'string' || !config.auditLog.trim())) throw new Error('bash-guard: auditLog must be a non-empty path')
   const domain = await ctx.storageDomain.open({ name: 'bash_guard', version: 1, layout: 'per-record', tables: { sessions: { valueSchema: recordSchema } } })
   ctx.effect(() => () => domain.close())
   const records = domain.table('sessions')
@@ -90,6 +95,22 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
     queues.set(id, pending)
     void pending.finally(() => { if (queues.get(id) === pending) queues.delete(id) }).catch(() => {})
     return pending
+  }
+  // Local JSONL audit trail for tuning the local classifier: deny-only by
+  // default, 'all' records allows too, and local vs Jev requirements are both
+  // recorded so disagreements surface as rule-fix candidates. Best-effort:
+  // a broken audit path must never block execution.
+  const auditFile = (): string => {
+    const override = process.env.BASH_GUARD_AUDIT_LOG || config.auditLog
+    return override ? (override.startsWith('~') ? join(homedir(), override.slice(1)) : override) : join(homedir(), '.dsh', 'bash-guard-audit.jsonl')
+  }
+  const writeAudit = (entry: Record<string, unknown>): void => {
+    if (auditLevel === 'off') return
+    try {
+      const file = auditFile()
+      mkdirSync(dirname(file), { recursive: true })
+      appendFileSync(file, `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`)
+    } catch { /* tuning log only */ }
   }
   new BashGuardService(ctx, (id) => ({ ...read(id), ...(decisions.has(id) ? { decision: decisions.get(id)! } : {}) }), (id, request) => serialized(sessionId(id), async () => {
     // Resolve inside the queue: never retain a stale binding across mutations.
@@ -213,10 +234,19 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       return false
     }
     // 7777 grants every bit: fully allow without any review, Jev or local.
-    if (state.mode === '7777') return next()
+    if (state.mode === '7777') {
+      if (auditLevel === 'all') writeAudit({ sessionId: session.id, inherited: !!inherited, tool: exec.name, mode: state.mode, engine: state.engine, localRequired: required, allowed: true, source: 'mode_7777' })
+      return next()
+    }
     const localAllowed = allows(state.mode, required)
     let finalRequired = required
+    let jevRequired: string | undefined
+    let suppressed = false
     let decision: GuardDecision = { source: 'local', fallback: false, allowed: localAllowed }
+    const auditCommand = (): string | undefined =>
+      suppressed || typeof args.command === 'string' && sensitive(args.command) ? '[SUPPRESSED]'
+        : typeof args.command === 'string' ? args.command
+        : [args.file_path, args.path, args.notebook_path].find(value => typeof value === 'string')
     if (state.engine === 'jev') {
       await settingsQueue
       await queues.get(session.id)
@@ -226,24 +256,43 @@ export async function apply(ctx: any, config: { mode?: string } = {}): Promise<v
       const settings = readSettings()
       const cwd = exec.name.toLowerCase() === 'bash' && typeof args.workdir === 'string' ? path.resolve(workspace, args.workdir) : workspace
       const input = prepareState({ tool: exec.name, workspace, cwd, arguments: args })
+      suppressed = input === undefined
       // Suppressed input (secrets, oversized, unparseable) never leaves the
       // machine: like any Jev outage, the local bit rules decide.
       decision = input === undefined
         ? { source: 'local', fallback: true, allowed: localAllowed }
         : await evaluate(settings, input).then(
-            result => { finalRequired = result.required; return { source: 'jev', fallback: false, allowed: allows(state.mode, result.required) } },
+            result => { finalRequired = result.required; jevRequired = result.required; return { source: 'jev', fallback: false, allowed: allows(state.mode, result.required) } },
             () => ({ source: 'local', fallback: true, allowed: localAllowed }))
       // Wait for mutations begun during the request, then re-resolve the whole
       // policy synchronously immediately before next(): own revision for top
       // level sessions, the inherited ancestor chain for delegated children.
       await queues.get(session.id)
       await settingsQueue
-      if (!policyStillCurrent() || readSettings().revision !== settings.revision) {
-        decisions.set(session.id, { ...decision, allowed: false })
+      const raceChanged = !policyStillCurrent() || readSettings().revision !== settings.revision
+      if (raceChanged) {
+        decision = { ...decision, allowed: false }
+        decisions.set(session.id, decision)
+        if (auditLevel !== 'off') {
+          writeAudit({
+            sessionId: session.id, inherited: !!inherited, tool: exec.name, command: auditCommand(),
+            cwd: workspace, mode: state.mode, engine: state.engine, localRequired: required,
+            jevRequired: jevRequired ?? null, suppressed, allowed: false, source: decision.source,
+            fallback: decision.fallback, configChanged: true,
+          })
+        }
         return denied('Bash Guard configuration changed during evaluation; retry the operation with the current policy.')
       }
     }
     decisions.set(session.id, decision)
+    if (auditLevel === 'all' || auditLevel === 'deny' && !decision.allowed) {
+      writeAudit({
+        sessionId: session.id, inherited: !!inherited, tool: exec.name, command: auditCommand(),
+        cwd: workspace, mode: state.mode, engine: state.engine, localRequired: required,
+        jevRequired: jevRequired ?? null, suppressed, allowed: decision.allowed, source: decision.source,
+        fallback: decision.fallback,
+      })
+    }
     if (decision.allowed) return next() // Never replace or override downstream denials.
     // Both engines report the same artifact: a required-mode number that the
     // shared bit comparison evaluated against the configured mode.

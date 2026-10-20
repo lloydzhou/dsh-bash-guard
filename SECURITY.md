@@ -10,6 +10,10 @@ Do not put credentials, private commands, session exports or confidential paths 
 
 Local mode makes no Jev requests. Enabling Jev for a session sends supported operations to the configured endpoint: command text, absolute workspace/working-directory/target paths, file-matching patterns, tool identifiers and permission bits. Write bodies, edit replacement text and grep search text are omitted. Embedded shell code can still contain private data; keyword screening is not comprehensive secret detection. Sensitive, malformed or oversized inputs can be rejected without a request. Connection tests use a fixed synthetic operation.
 
+## Audit log
+
+The plugin appends a JSONL audit record locally (default `~/.dsh/bash-guard-audit.jsonl`; `auditLog` config or `BASH_GUARD_AUDIT_LOG` override). `audit: 'deny'` (default) records denied operations only; `audit: 'all'` also records allowed ones; `audit: 'off'` disables logging. Commands matching the sensitive pattern are recorded as `[SUPPRESSED]` — never plaintext. The log is best-effort: write failures are swallowed and never block execution. It contains command text and paths in plaintext; protect the file like any shell history. It is a tuning aid, not tamper-evident compliance logging.
+
 API keys are stored as plaintext in the host's profile storage domain `bash_guard_jev`, not an encrypted vault. Public settings return only whether a key exists. The plugin does not independently guarantee underlying file permissions, ACLs, encrypted backups or host RPC access controls. Protect your OS account and profile directory; never commit/copy them into the repository. Clearing a key removes it from the active record, not necessarily backups, snapshots or memory; revoke it at the provider if exposed.
 
 HTTPS is required except for loopback development endpoints. HTTP loopback endpoints cannot use remote proxies. Use trusted local proxies; a proxy controls connectivity and can observe destination/timing. TLS verification is not disabled. Endpoint changes require explicit key reentry. Arbitrary upstream bodies and error messages are not shown, only bounded diagnostic codes.

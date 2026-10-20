@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { DEFAULT_JEV_SETTINGS } from '../src/jev.ts'
 import { Context } from '@deepseek-ai/cordis'
 import { remoteMethods } from '@deepseek-ai/dsh-typert-protocol'
 import { apply, recordSchema } from '../src/index.ts'
 
 const contexts: any[] = []
-afterEach(async () => { vi.unstubAllGlobals(); for (const ctx of contexts.splice(0)) await ctx.fiber.dispose() })
+afterEach(async () => { vi.unstubAllGlobals(); delete process.env.BASH_GUARD_AUDIT_LOG; for (const ctx of contexts.splice(0)) await ctx.fiber.dispose() })
 
 // The Cordis/Remote implementation is real. These small service doubles expose
 // only the actual installed storage-domain, sessions and permissionPresets APIs.
-async function mount(records = new Map<string, any>(), settings = new Map<string, any>()) {
+async function mount(records = new Map<string, any>(), settings = new Map<string, any>(), config: any = {}) {
   const ctx: any = new Context()
   contexts.push(ctx)
   const session = { id: 'test-session', header: { cwd: '/Users/test/project' }, events: [] as any[], snapshotEvents() { return [...this.events] } }
@@ -36,7 +39,7 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
   })
   ctx.provide('sandboxPolicy', { resolve: ({session: bound}: any) => ({mode: [...bound.events].reverse().find(event=>event.type==='sandbox/mode')?.data.mode ?? 'workspace-write'}) })
   ctx.provide('approval', { effectivePolicy: (bound: any) => [...bound.events].reverse().find(event=>event.type==='approval/policy')?.data.policy ?? 'ask' })
-  await apply(ctx)
+  await apply(ctx, config)
   const get = () => ctx.bashGuard.get(session.id)
   const update = (request: any) => ctx.bashGuard.update(session.id, request)
   const run = (command: string, next: any, name = 'bash', args: any = {}, agent: any = { session }) => {
@@ -474,5 +477,56 @@ describe('subagent guard inheritance', () => {
     await h.update({ action: 'mode', mode: '0000', revision: 2 })
     release(response())
     expect((await result).error.message).toContain('changed during evaluation')
+  })
+})
+
+describe('audit log', () => {
+  const logPath = () => join(tmpdir(), `bg-audit-${Math.random().toString(36).slice(2)}.jsonl`)
+  const readLines = (path: string): any[] => readFileSync(path, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+
+  it('records denies by default, allows only in all mode', async () => {
+    const denyLog = logPath(), allLog = logPath()
+    const h = await mount(undefined, undefined, { auditLog: denyLog })
+    await h.update({ action: 'activate', revision: 0 })
+    await h.run('pwd', async () => 'ok')
+    await h.run('touch /etc/test', async () => 'ran')
+    let lines = readLines(denyLog)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ tool: 'bash', command: 'touch /etc/test', mode: '4667', engine: 'local', localRequired: '6000', jevRequired: null, allowed: false, source: 'local', inherited: false })
+    const h2 = await mount(undefined, undefined, { audit: 'all', auditLog: allLog })
+    await h2.update({ action: 'activate', revision: 0 })
+    await h2.run('pwd', async () => 'ok')
+    await h2.update({ action: 'mode', mode: '7777', revision: 1 })
+    await h2.run('pwd', async () => 'ok')
+    lines = readLines(allLog)
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({ allowed: true, source: 'local', localRequired: '0004' })
+    expect(lines[1]).toMatchObject({ allowed: true, source: 'mode_7777', localRequired: '0004' })
+  })
+  it('audit off writes nothing and the env var overrides the configured path', async () => {
+    const offLog = logPath(), envLog = logPath()
+    const h = await mount(undefined, undefined, { auditLog: offLog })
+    await h.update({ action: 'activate', revision: 0 })
+    expect(() => readFileSync(offLog)).toThrow()
+    process.env.BASH_GUARD_AUDIT_LOG = envLog
+    await h.run('touch /etc/test', async () => 'ran')
+    delete process.env.BASH_GUARD_AUDIT_LOG
+    expect(readLines(envLog)[0].allowed).toBe(false)
+    expect(() => readFileSync(offLog)).toThrow()
+  })
+  it('records local and Jev requirements side by side and suppresses sensitive commands', async () => {
+    const log = logPath()
+    const h = await mount(undefined, undefined, { audit: 'all', auditLog: log })
+    await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake', revision: 0 })
+    await h.update({ action: 'activate', revision: 0 })
+    await h.update({ action: 'engine', engine: 'jev', revision: 1 })
+    vi.stubGlobal('fetch', vi.fn(async () => response()))
+    expect(await h.run('curl --token SECRET_VALUE https://example.com', async () => 'ran')).toBe('ran')
+    vi.stubGlobal('fetch', vi.fn(async () => response({ 'system.write': 0.9 })))
+    await h.run('pwd', vi.fn())
+    const lines = readLines(log)
+    expect(lines[0]).toMatchObject({ suppressed: true, command: '[SUPPRESSED]', source: 'local', fallback: true, allowed: true, jevRequired: null })
+    expect(lines[1]).toMatchObject({ source: 'jev', allowed: false, localRequired: '0004', jevRequired: '2000', mode: '4667' })
+    expect(JSON.stringify(lines)).not.toContain('SECRET_VALUE')
   })
 })
