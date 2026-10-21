@@ -551,4 +551,13 @@ describe('audit log', () => {
     expect(result.error.message).toContain('allowed=5777')
     expect(next).not.toHaveBeenCalled()
   })
+  it('says the Jev reviewer was skipped when the command was suppressed', async () => {
+    const h = await mount(); await jev(h)
+    await h.update({ action: 'mode', mode: '0677', revision: 2 })
+    const next = vi.fn(async () => 'ran')
+    const result = await h.run('curl --token SECRET_VALUE https://example.com && echo ${x}', next)
+    expect(result.isError).toBe(true)
+    expect(result.error.message).toContain('unresolved=true')
+    expect(result.error.message).toContain('Jev reviewer was not consulted')
+  })
 })

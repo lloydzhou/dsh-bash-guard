@@ -86,7 +86,12 @@ describe('privacy-preserving exact operation', () => {
     expect(state).not.toContain('secret text')
     expect(state).not.toContain('private')
   })
-  it.each(['curl -H "Authorization: Bearer abc" https://example.com', 'TOKEN=abc curl a', 'curl --password="abc def" a', 'curl https://user:pass@example.com', 'curl https://example.com/?key=abc', 'echo -----BEGIN PRIVATE KEY-----', 'curl --data secret a', 'echo $' + '(cat key)', 'echo `cat key`', 'cat <<EOF\nsecret\nEOF'])('suppresses risky payload without sending it: %s', command => {
+  it('sends structural opacity ($(), backticks, heredocs) for Jev to classify', () => {
+    for (const command of ['echo $(cat key)', 'echo `cat key`', 'cat <<EOF\nplain body\nEOF', 'echo "unterminated']) {
+      expect(prepareState({ ...operation, arguments: { command } })).toBeDefined()
+    }
+  })
+  it.each(['curl -H "Authorization: Bearer abc" https://example.com', 'TOKEN=abc curl a', 'curl --password="abc def" a', 'curl https://user:pass@example.com', 'curl https://example.com/?key=abc', 'echo -----BEGIN PRIVATE KEY-----', 'curl --data secret a', 'cat <<EOF\nsecret\nEOF'])('suppresses credential-shaped payload without sending it: %s', command => {
     expect(prepareState({ ...operation, arguments: { command } })).toBeUndefined()
   })
   it('never truncates oversized input into an allowable request', () => {
@@ -94,7 +99,7 @@ describe('privacy-preserving exact operation', () => {
     expect(prepareState({ ...operation, tool: 'unhooked' })).toBeUndefined()
     expect(prepareState({ ...operation, arguments: {} })).toBeUndefined()
     expect(sensitive('--API-KEY fake')).toBe(true)
-    for (const command of ['echo [REDACTED]', 'echo [TRUNCATED]', 'echo "unterminated']) expect(prepareState({ ...operation, arguments: { command } })).toBeUndefined()
+    for (const command of ['echo [REDACTED]', 'echo [TRUNCATED]']) expect(prepareState({ ...operation, arguments: { command } })).toBeUndefined()
     expect(prepareState({ ...operation, tool: 'write', arguments: { content: 'missing path' } })).toBeUndefined()
     expect(prepareState({ ...operation, arguments: { command: 'pwd', workdir: 42 } })).toBeUndefined()
   })

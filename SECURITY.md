@@ -8,7 +8,7 @@ Do not put credentials, private commands, session exports or confidential paths 
 
 ## Jev data flow
 
-Local mode makes no Jev requests. Enabling Jev for a session sends supported operations to the configured endpoint: command text, absolute workspace/working-directory/target paths, file-matching patterns, tool identifiers and permission bits. Write bodies, edit replacement text and grep search text are omitted. Embedded shell code can still contain private data; keyword screening is not comprehensive secret detection. Sensitive, malformed or oversized inputs can be rejected without a request. Connection tests use a fixed synthetic operation.
+Local mode makes no Jev requests. Enabling Jev for a session sends supported operations to the configured endpoint: FULL command text — including command substitutions, backticks and heredoc bodies — plus absolute workspace/working-directory/target paths, file-matching patterns, tool identifiers and permission bits. Write bodies, edit replacement text and grep search text are omitted. Embedded shell code can still contain private data; keyword screening is not comprehensive secret detection. Credential-shaped commands and oversized inputs are not sent — the local classifier decides them. Connection tests use a fixed synthetic operation.
 
 ## Audit log
 

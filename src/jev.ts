@@ -65,22 +65,12 @@ export function parseRequirement(response: any): string {
   return mask.toString(8).padStart(4, '0')
 }
 
-// Do not attempt partial regex replacement of shell secrets: quoting, repeated
-// flags, multiline values and encodings make that unsafe. Suppress the entire
-// operation and deny locally when sensitive or indirect input is detected.
+// Credential-shaped input still suppresses entirely (partial redaction of
+// shell secrets is unsafe). Structural opacity — $(), backticks, heredocs,
+// ${} — is NOT suppressed: those are exactly the constructs the local
+// classifier cannot parse and Jev is configured to classify.
 export function sensitive(value: string): boolean {
   return /authorization|proxy-authorization|cookie|bearer|password|passwd|api[-_]?key|access[-_]?key|private[-_ ]?key|credential|secret|token|BEGIN [A-Z ]*PRIVATE|https?:\/\/[^\s/]*@|https?:\/\/[^\s]*[?#]|--(?:data\S*|json|form\S*|user|header)|(?:^|\s)-[dHFu](?:\s|[^\s])|\b(?:base64|eval)\b/i.test(value)
-}
-
-function balancedShellQuotes(command: string): boolean {
-  let quote = ''
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i]
-    if (char === '\\' && quote !== "'") { if (++i >= command.length) return false; continue }
-    if (quote) { if (char === quote) quote = '' }
-    else if (char === '"' || char === "'") quote = char
-  }
-  return !quote
 }
 
 export function prepareState(operation: JevOperation): string | undefined {
@@ -95,7 +85,7 @@ export function prepareState(operation: JevOperation): string | undefined {
     if (!['string', 'number', 'boolean'].includes(typeof value) || ['command', 'workdir', 'file_path', 'path', 'notebook_path', 'pattern', 'include'].includes(key) && typeof value !== 'string' || typeof value === 'number' && !Number.isFinite(value) || typeof value === 'string' && (sensitive(value) || /[\x00]|\[(?:REDACTED|TRUNCATED)\]/i.test(value))) return undefined
     args[key] = value
   }
-  if (tool === 'bash' && (typeof args.command !== 'string' || !balancedShellQuotes(args.command) || /\$\(|`|[<>]\(|<<|\$\{|\b(?:python\S*|node|ruby|perl|php)\s+-(?:\S*[ce])\b/.test(args.command))) return undefined
+  if (tool === 'bash' && typeof args.command !== 'string') return undefined
   if (['read', 'read_image', 'write', 'edit', 'multiedit', 'notebookedit'].includes(tool) && ![args.file_path, args.path, args.notebook_path].some(value => typeof value === 'string' && value.trim())) return undefined
   if (!path.isAbsolute(operation.workspace) || !path.isAbsolute(operation.cwd) || sensitive(operation.workspace) || sensitive(operation.cwd)) return undefined
   const state = JSON.stringify({

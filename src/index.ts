@@ -339,7 +339,12 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     // shortage — never claim required=7777, that invites widening permissions
     // for a parse limitation; instead ask for a recognizable rewrite.
     if (finalRequired === '7777' && decision.source === 'local') {
-      return denied(`command not classified by bash guard (unresolved=true; the lexical classifier cannot parse this command; allowed=${state.mode} unchanged). Rewrite it with constructs the classifier understands: no $() or backticks, no heredocs, no unquoted {} braces or if/for/while keywords; use explicit absolute paths and one simple command per step. Do not bypass this policy.`)
+      // When Jev is configured but the input was suppressed, say so — a silent
+      // "why didn't Jev judge this?" is exactly the confusion to avoid.
+      const jevNote = state.engine === 'jev'
+        ? ' The configured Jev reviewer was not consulted: this command contains constructs that must not leave the machine.'
+        : ''
+      return denied(`command not classified by bash guard (unresolved=true; the lexical classifier cannot parse this command; allowed=${state.mode} unchanged).${jevNote} Rewrite it with constructs the classifier understands: no $() or backticks, no heredocs, no unquoted {} braces or if/for/while keywords; use explicit absolute paths and one simple command per step. Do not bypass this policy.`)
     }
     // Both engines report the same artifact: a required-mode number that the
     // shared bit comparison evaluated against the configured mode.
