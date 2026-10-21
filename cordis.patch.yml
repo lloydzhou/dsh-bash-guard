@@ -4,8 +4,8 @@
       name: dsh-bash-guard
       config:
         mode: '4667'
-        # 审计日志：'deny'（默认，仅记录被拒绝的操作）| 'all'（放行也记录，用于优化本地规则）| 'off'
-        audit: 'deny'
+        # 审计日志：'all'（放行与拒绝都记录，用于积累样本优化本地规则）| 'deny'（仅拒绝）| 'off'
+        audit: 'all'
         # 日志文件（JSONL，不存在会自动创建）；不配置时默认 ~/.dsh/bash-guard-audit.jsonl，
         # 也可用环境变量 BASH_GUARD_AUDIT_LOG 覆盖
         # auditLog: /path/to/bash-guard-audit.jsonl

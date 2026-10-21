@@ -131,6 +131,21 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
     expect(command('cd a; cd b')).toBe('7777')
     expect(command('cat /private/tmp/x')).toBe('0004')
   })
+  it('classifies real session work commands from the audit corpus', () => {
+    // Real commands blocked as 7777 before the cd//private/tmp fixes; cwd is
+    // a macOS /private/tmp session directory acting as the workspace.
+    const sessionCmd = (source: string): string => classifyCommand(source, {
+      cwd: '/private/tmp/hymona-session-runtime-20261019',
+      workspace: '/private/tmp/hymona-session-runtime-20261019',
+      home: '/Users/test',
+    })
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/server-session-deps && python3 -m pytest tests/test_skill_import.py -q 2>&1 | tail -5')).toBe('0005')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git log --oneline -2 && git diff --stat HEAD~1')).toBe('0004')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/platform-fs-upload/services/fs-gateway && go build ./... 2>&1 | head -40')).toBe('0005')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/web && gh issue view 12 --repo org/repo --comments > issue.md')).toBe('0046')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git worktree add ../sibling -b feat/session')).toBe('0201')
+    expect(sessionCmd("cd /private/tmp/hymona-session-runtime-20261019/x && node --test tests/session-uploads.test.mjs")).toBe('0005')
+  })
   it('uses bash workdir without turning an external directory into the workspace', () => {
     expect(tool('bash', { command: 'cat README.md', workdir: '/Users/other' })).toBe('0400')
     expect(tool('bash', { command: 'cat README.md', workdir: 'src' })).toBe('0004')

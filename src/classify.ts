@@ -32,7 +32,7 @@ const SENSITIVE = /(?:^|\/)(?:\.ssh|\.gnupg|\.aws|\.docker)(?:\/|$)|(?:\.env|\.p
 const READERS = new Set(['cat', 'ls', 'head', 'tail', 'less', 'more', 'grep', 'egrep', 'fgrep', 'rg', 'find', 'stat', 'wc', 'file', 'du', 'readlink', 'realpath', 'sort', 'uniq', 'cut', 'diff', 'cmp', 'sed', 'awk'])
 const MUTATORS = new Set(['mkdir', 'touch', 'cp', 'mv', 'rm', 'rmdir', 'tee', 'chmod', 'chown', 'chgrp', 'truncate', 'install', 'ln', 'dd'])
 const INTERPRETERS = /^(?:ba|z|da|k)?sh$|^(?:python\d*(?:\.\d+)?|node|ruby|perl|php|lua|eval|source|\.)$/
-const NETWORK = /^(?:curl|wget|http|https|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|ping)$/
+const NETWORK = /^(?:curl|wget|http|https|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|ping|gh)$/
 const GIT_WRITE = /^(?:fetch|pull|clone|commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick|reset|clean|init)$/
 const GIT_EXEC = /^(?:commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick)$/
 const within = (target: string, root: string): boolean => target === root || target.startsWith(root === '/' ? '/' : `${root}/`)
