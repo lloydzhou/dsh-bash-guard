@@ -207,7 +207,19 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
         header = parent.header
       }
     }
-    if (!state.active) return next()
+    if (!state.active) {
+      // Diagnostic for delegated children: shows what the runtime header
+      // actually carries so a silent inheritance miss is observable. No
+      // command text is recorded.
+      if (session.header?.origin === 'subagent' && auditLevel !== 'off') {
+        writeAudit({
+          sessionId: session.id, diagnostic: 'subagent-unguarded', tool: exec.name,
+          origin: session.header.origin ?? null, parentSession: session.header.parentSession ?? null,
+          headerKeys: Object.keys(session.header ?? {}), allowed: false, source: 'diagnostic',
+        })
+      }
+      return next()
+    }
     const workspace = session.header.cwd ?? process.cwd()
     const args = exec.arguments && typeof exec.arguments === 'object' ? exec.arguments : {}
     const required = classifyTool(exec.name, args, { workspace, cwd: workspace })
