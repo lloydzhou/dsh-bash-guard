@@ -33,8 +33,8 @@ const READERS = new Set(['cat', 'ls', 'head', 'tail', 'less', 'more', 'grep', 'e
 const MUTATORS = new Set(['mkdir', 'touch', 'cp', 'mv', 'rm', 'rmdir', 'tee', 'chmod', 'chown', 'chgrp', 'truncate', 'install', 'ln', 'dd'])
 const INTERPRETERS = /^(?:ba|z|da|k)?sh$|^(?:python\d*(?:\.\d+)?|node|ruby|perl|php|lua|eval|source|\.)$/
 const NETWORK = /^(?:curl|wget|http|https|ssh|scp|sftp|rsync|nc|ncat|netcat|telnet|ftp|ping|gh)$/
-const GIT_WRITE = /^(?:fetch|pull|clone|commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick|reset|clean|init)$/
-const GIT_EXEC = /^(?:commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick)$/
+const GIT_WRITE = /^(?:fetch|pull|clone|commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick|reset|clean|init|worktree)$/
+const GIT_EXEC = /^(?:commit|add|checkout|switch|restore|merge|rebase|stash|cherry-pick|worktree)$/
 const within = (target: string, root: string): boolean => target === root || target.startsWith(root === '/' ? '/' : `${root}/`)
 const format = (mask: number): Requirement => mask.toString(8).padStart(4, '0')
 const bit = (scope: BashGuardScope, permissions: number): number => permissions << ((3 - SCOPES.indexOf(scope)) * 3)
@@ -58,7 +58,9 @@ function pathMask(value: string, permissions: number, ctx: ResolvedContext): num
   const resolved = path.resolve(ctx.cwd, value)
   if (resolved === '/dev/null') return 0
   if (within(resolved, '/dev/tcp') || within(resolved, '/dev/udp')) return bit('network', permissions)
-  if (trusted.some(root => within(resolved, root))) return bit(value.split('/').includes('..') ? 'system' : 'workspace', permissions)
+  // '..' that resolves back INSIDE the trusted root is fine; true escapes land
+  // on system/external paths and are classified by the checks below.
+  if (trusted.some(root => within(resolved, root))) return bit('workspace', permissions)
   if (resolved === '/' || /^\/[?*\[]/.test(resolved) || SYSTEM.test(resolved) || SENSITIVE.test(original)) return bit('system', permissions)
   return bit(within(resolved, ctx.workspace) ? 'workspace' : 'external', permissions)
 }

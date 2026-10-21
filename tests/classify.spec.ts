@@ -141,10 +141,16 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
     })
     expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/server-session-deps && python3 -m pytest tests/test_skill_import.py -q 2>&1 | tail -5')).toBe('0005')
     expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git log --oneline -2 && git diff --stat HEAD~1')).toBe('0004')
-    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/platform-fs-upload/services/fs-gateway && go build ./... 2>&1 | head -40')).toBe('0005')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/platform-fs-upload/services/fs-gateway && go build ./... 2>&1 | head -40')).toBe('0007')
     expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/web && gh issue view 12 --repo org/repo --comments > issue.md')).toBe('0046')
-    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git worktree add ../sibling -b feat/session')).toBe('0201')
+    expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git worktree add ../sibling -b feat/session')).toBe('0007')
     expect(sessionCmd("cd /private/tmp/hymona-session-runtime-20261019/x && node --test tests/session-uploads.test.mjs")).toBe('0005')
+  })
+  it('treats dotdot paths resolving inside a trusted root as workspace', () => {
+    const session = { cwd: '/private/tmp/h/x', workspace: '/private/tmp/h', home: '/Users/test' }
+    expect(classifyCommand('cat ../sibling', session)).toBe('0004')
+    expect(classifyCommand('../sibling', session)).toBe('0001')
+    expect(classifyCommand('cat /tmp/../etc/hosts', session)).toBe('4000')
   })
   it('uses bash workdir without turning an external directory into the workspace', () => {
     expect(tool('bash', { command: 'cat README.md', workdir: '/Users/other' })).toBe('0400')

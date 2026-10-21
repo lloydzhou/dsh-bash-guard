@@ -323,12 +323,16 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       })
     }
     if (decision.allowed) return next() // Never replace or override downstream denials.
+    // Two distinct denials. A computed requirement the mode does not grant
+    // states its boundary as bits. An unparseable command is NOT a permission
+    // shortage — never claim required=7777, that invites widening permissions
+    // for a parse limitation; instead ask for a recognizable rewrite.
+    if (finalRequired === '7777' && decision.source === 'local') {
+      return denied(`command not classified by bash guard (unresolved=true; the lexical classifier cannot parse this command; allowed=${state.mode} unchanged). Rewrite it with constructs the classifier understands: no $() or backticks, no heredocs, no unquoted {} braces or if/for/while keywords; use explicit absolute paths and one simple command per step. Do not bypass this policy.`)
+    }
     // Both engines report the same artifact: a required-mode number that the
     // shared bit comparison evaluated against the configured mode.
     const detail = decision.fallback ? ', fallback=local' : decision.source === 'jev' ? ', decision=deny' : ''
-    // required=7777 from the local scanner means "could not analyze", not
-    // "needs every bit" — say so instead of implying imaginary capabilities.
-    const unresolved = finalRequired === '7777' && decision.source === 'local' ? ', unresolved=true' : ''
-    return denied(`command blocked by bash safety policy (source=${decision.source}${detail}; required=${finalRequired} allowed=${state.mode}${unresolved}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
+    return denied(`command blocked by bash safety policy (source=${decision.source}${detail}; required=${finalRequired} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
   })
 }
