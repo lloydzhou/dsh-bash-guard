@@ -96,6 +96,23 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     void pending.finally(() => { if (queues.get(id) === pending) queues.delete(id) }).catch(() => {})
     return pending
   }
+  // Delegated children inherit the nearest active ancestor guard. Resolution
+  // is read-only: inherited state is never persisted and carries no revision
+  // of its own. Walks session.header.parentSession (same source the official
+  // auto-review uses for child lineage).
+  const inheritGuard = (session: any): { state: GuardRecord; parentId: string; revision: number; mode: string; engine: 'local' | 'jev' } | undefined => {
+    let header = session?.header
+    for (let depth = 0; header && depth < 16; depth += 1) {
+      const parentId: unknown = header.parentSession
+      if (typeof parentId !== 'string' || !parentId) return undefined
+      const parent = ctx.sessions.get(parentId)
+      if (!parent) return undefined
+      const parentState = read(parentId, parent)
+      if (parentState.active) return { state: parentState, parentId, revision: parentState.revision, mode: parentState.mode, engine: parentState.engine }
+      header = parent.header
+    }
+    return undefined
+  }
   // Local JSONL audit trail for tuning the local classifier: deny-only by
   // default, 'all' records allows too, and local vs Jev requirements are both
   // recorded so disagreements surface as rule-fix candidates. Best-effort:
@@ -112,7 +129,17 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       appendFileSync(file, `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`)
     } catch { /* tuning log only */ }
   }
-  new BashGuardService(ctx, (id) => ({ ...read(id), ...(decisions.has(id) ? { decision: decisions.get(id)! } : {}) }), (id, request) => serialized(sessionId(id), async () => {
+  new BashGuardService(ctx, (id) => {
+    const base = read(id)
+    // The child menu reflects the inherited guard so the selection matches
+    // what enforcement actually applies to delegated executions.
+    if (!base.active) {
+      const session = ctx.sessions.get(id)
+      const inherited = session ? inheritGuard(session) : undefined
+      if (inherited) return { ...inherited.state }
+    }
+    return { ...base, ...(decisions.has(id) ? { decision: decisions.get(id)! } : {}) }
+  }, (id, request) => serialized(sessionId(id), async () => {
     // Resolve inside the queue: never retain a stale binding across mutations.
     const session = ctx.sessions.get(id)
     if (!session) throw new Error('Session is not live; open the session before changing Bash Guard')
@@ -187,24 +214,14 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     await queues.get(session.id)
     let state = read(session.id, session)
     // Subagent executions share this listener with their own session id, which
-    // never has a stored record. Walk header.parentSession to the nearest
-    // active ancestor guard and apply it read-only: inherited state is never
-    // persisted and carries no revision of its own.
+    // never has a stored record: enforcement applies the nearest active
+    // ancestor guard read-only (never persisted, no revision of its own).
     let inherited: { parentId: string; revision: number; mode: string; engine: 'local' | 'jev' } | undefined
     if (!state.active) {
-      let header = session.header
-      for (let depth = 0; header && depth < 16; depth += 1) {
-        const parentId: unknown = header.parentSession
-        if (typeof parentId !== 'string' || !parentId) break
-        const parent = ctx.sessions.get(parentId)
-        if (!parent) break
-        const parentState = read(parentId, parent)
-        if (parentState.active) {
-          state = parentState
-          inherited = { parentId, revision: parentState.revision, mode: parentState.mode, engine: parentState.engine }
-          break
-        }
-        header = parent.header
+      const ancestor = inheritGuard(session)
+      if (ancestor) {
+        state = ancestor.state
+        inherited = { parentId: ancestor.parentId, revision: ancestor.revision, mode: ancestor.mode, engine: ancestor.engine }
       }
     }
     if (!state.active) {

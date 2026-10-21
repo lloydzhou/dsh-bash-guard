@@ -466,6 +466,15 @@ describe('subagent guard inheritance', () => {
     const orphan = h.child({ id: 'orphan', header: { parentSession: 'gone', origin: 'subagent' } })
     expect(await h.runAs(orphan, 'touch /etc/test', async () => 'ran')).toBe('ran')
   })
+  it('the child menu reflects the inherited guard and rejects child edits', async () => {
+    const h = await mount()
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    await h.update({ action: 'activate', revision: 0 })
+    expect(h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, engine: 'local' })
+    await h.update({ action: 'mode', mode: '7777', revision: 1 })
+    expect(h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '7777', active: true })
+    await expect(h.ctx.bashGuard.update('child-session', { action: 'mode', mode: '0000', revision: 1 })).rejects.toThrow()
+  })
   it('denies child Jev operations when the inherited parent policy changes mid-flight', async () => {
     const h = await mount(); await jev(h)
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
