@@ -124,6 +124,33 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     }
     return undefined
   }
+  // Ended (detached) subagents are still resolvable through the session query
+  // service: read-only display of the guard they ran under.
+  const headerOf = async (id: string): Promise<any | undefined> => {
+    const live = ctx.sessions.get(id)
+    if (live) return live.header
+    if (!ctx.sessionQuery?.observeSession) return undefined
+    try {
+      const observed = await ctx.sessionQuery.observeSession(id, { projectionMode: 'none' })
+      return observed?.header
+    } catch { return undefined }
+  }
+  const coldInherited = async (id: string): Promise<GuardRecord | undefined> => {
+    let currentId = id
+    for (let depth = 0; depth < 16; depth += 1) {
+      const header = await headerOf(currentId)
+      if (!header) return undefined
+      const parentId: unknown = header.parentSession
+      if (typeof parentId !== 'string' || !parentId) return undefined
+      const stored = records.get(parentId)
+      if (stored) {
+        const state = recordSchema.parse(stored)
+        if (state.active) return state
+      }
+      currentId = parentId
+    }
+    return undefined
+  }
   // Local JSONL audit trail for tuning the local classifier: deny-only by
   // default, 'all' records allows too, and local vs Jev requirements are both
   // recorded so disagreements surface as rule-fix candidates. Best-effort:
@@ -140,14 +167,29 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       appendFileSync(file, `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`)
     } catch { /* tuning log only */ }
   }
-  new BashGuardService(ctx, (id) => {
+  new BashGuardService(ctx, async (id) => {
     const base = read(id)
-    // The child menu reflects the inherited guard so the selection matches
-    // what enforcement actually applies to delegated executions.
+    // The child menu reflects the guard the child owns: delegated children
+    // materialize a copy of the nearest active ancestor config on first
+    // touch (editable afterwards); ended subagents show their last inherited
+    // guard read-only via the session query.
     if (!base.active) {
       const session = ctx.sessions.get(id)
-      const inherited = session ? inheritGuard(session) : undefined
-      if (inherited) return { ...inherited.state }
+      if (session?.header?.parentSession) {
+        const ancestor = inheritGuard(session)
+        if (ancestor) {
+          const own = await serialized(id, async () => {
+            const ownState = read(id, session)
+            if (ownState.active) return ownState
+            const created = recordSchema.parse({ mode: ancestor.state.mode, active: true, revision: 0, presetSeq: presetBoundary(session), engine: ancestor.state.engine })
+            await records.put(id, created)
+            return created
+          })
+          return { ...own, inherited: true }
+        }
+      }
+      const cold = await coldInherited(id)
+      if (cold) return { ...cold, inherited: true }
     }
     return { ...base, ...(decisions.has(id) ? { decision: decisions.get(id)! } : {}) }
   }, (id, request) => serialized(sessionId(id), async () => {
@@ -224,15 +266,22 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     // Observe writes already in flight before making a permission decision.
     await queues.get(session.id)
     let state = read(session.id, session)
-    // Subagent executions share this listener with their own session id, which
-    // never has a stored record: enforcement applies the nearest active
-    // ancestor guard read-only (never persisted, no revision of its own).
-    let inherited: { parentId: string; revision: number; mode: string; engine: 'local' | 'jev' } | undefined
-    if (!state.active) {
+    // Delegated children materialize their OWN copy of the nearest active
+    // ancestor guard on first execution. Afterwards the child owns its config:
+    // later parent changes do not propagate, and the child can adjust its own
+    // mode/engine independently.
+    let materialized = false
+    if (!state.active && session.header?.parentSession) {
       const ancestor = inheritGuard(session)
       if (ancestor) {
-        state = ancestor.state
-        inherited = { parentId: ancestor.parentId, revision: ancestor.revision, mode: ancestor.mode, engine: ancestor.engine }
+        state = await serialized(session.id, async () => {
+          const own = read(session.id, session)
+          if (own.active) return own
+          materialized = true
+          const created = recordSchema.parse({ mode: ancestor.state.mode, active: true, revision: 0, presetSeq: presetBoundary(session), engine: ancestor.state.engine })
+          await records.put(session.id, created)
+          return created
+        })
       }
     }
     if (!state.active) {
@@ -253,29 +302,19 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     const required = classifyTool(exec.name, args, { workspace, cwd: workspace })
     if (required === undefined) return next()
     const denied = (message: string) => ({ content: [{ type: 'text', text: `Error: ${message}` }], isError: true, error: { message, info: { name: 'BashGuardError', code: BASH_GUARD_DENIED } } })
+    // The materialized (or own) record is the single source of truth: compare
+    // only against it, never against the parent's later changes.
     const policyStillCurrent = (): boolean => {
-      if (!inherited) {
-        const current = read(session.id)
-        return ctx.sessions.get(session.id) === session && current.revision === state.revision && current.active
-      }
-      let header = session.header
-      for (let depth = 0; header && depth < 16; depth += 1) {
-        const parentId: unknown = header.parentSession
-        if (typeof parentId !== 'string' || !parentId) return false
-        const parent = ctx.sessions.get(parentId)
-        if (!parent) return false
-        const parentState = read(parentId, parent)
-        if (parentState.active) {
-          return parentState.revision === inherited.revision
-            && parentState.mode === inherited.mode && parentState.engine === inherited.engine
-        }
-        header = parent.header
-      }
-      return false
+      const current = read(session.id)
+      const a = ctx.sessions.get(session.id) === session
+      const b = current.revision === state.revision
+      const c = current.active
+      if (!(a && b && c)) console.error('PSC-FALSE', JSON.stringify({ a, b, c, current, stateMode: state.mode, stateRevision: state.revision }))
+      return a && b && c
     }
     // 7777 grants every bit: fully allow without any review, Jev or local.
     if (state.mode === '7777') {
-      if (auditLevel === 'all') writeAudit({ sessionId: session.id, inherited: !!inherited, tool: exec.name, mode: state.mode, engine: state.engine, localRequired: required, allowed: true, source: 'mode_7777' })
+      if (auditLevel === 'all') writeAudit({ sessionId: session.id, materialized: !!materialized, tool: exec.name, mode: state.mode, engine: state.engine, localRequired: required, allowed: true, source: 'mode_7777' })
       return next()
     }
     const localAllowed = allows(state.mode, required)
@@ -316,7 +355,7 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
         decisions.set(session.id, decision)
         if (auditLevel === 'all') {
           writeAudit({
-            sessionId: session.id, inherited: !!inherited, tool: exec.name, command: auditCommand(),
+            sessionId: session.id, materialized: !!materialized, tool: exec.name, command: auditCommand(),
             cwd: workspace, mode: state.mode, engine: state.engine, localRequired: required,
             jevRequired: jevRequired ?? null, suppressed, allowed: false, source: decision.source,
             fallback: decision.fallback, configChanged: true,
@@ -328,7 +367,7 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     decisions.set(session.id, decision)
     if (auditLevel === 'all' || auditLevel === 'deny' && !decision.allowed) {
       writeAudit({
-        sessionId: session.id, inherited: !!inherited, tool: exec.name, command: auditCommand(),
+        sessionId: session.id, materialized: !!materialized, tool: exec.name, command: auditCommand(),
         cwd: workspace, mode: state.mode, engine: state.engine, localRequired: required,
         jevRequired: jevRequired ?? null, suppressed, allowed: decision.allowed, source: decision.source,
         fallback: decision.fallback,

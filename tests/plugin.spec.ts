@@ -39,8 +39,9 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
   })
   ctx.provide('sandboxPolicy', { resolve: ({session: bound}: any) => ({mode: [...bound.events].reverse().find(event=>event.type==='sandbox/mode')?.data.mode ?? 'workspace-write'}) })
   ctx.provide('approval', { effectivePolicy: (bound: any) => [...bound.events].reverse().find(event=>event.type==='approval/policy')?.data.policy ?? 'ask' })
+  const coldSessions = new Map<string, any>()
+  ctx.provide('sessionQuery', { observeSession: async (id: string) => coldSessions.get(id) })
   await apply(ctx, config)
-  const get = () => ctx.bashGuard.get(session.id)
   const update = (request: any) => ctx.bashGuard.update(session.id, request)
   const run = (command: string, next: any, name = 'bash', args: any = {}, agent: any = { session }) => {
     const listeners = [...ctx.events.dispatch('emit', ['tools/execute'])]
@@ -54,11 +55,21 @@ async function mount(records = new Map<string, any>(), settings = new Map<string
       events: [] as any[],
       snapshotEvents() { return [...this.events] },
     }
+    // The runtime's delegation capture seeds the child log with the parent's
+    // native policy (danger-full-access + never) at spawn.
+    if (overrides.header?.parentSession) {
+      for (const [type, data] of [['permission/preset', { preset: 'danger-full-access' }], ['sandbox/mode', { mode: 'danger-full-access' }], ['approval/policy', { policy: 'never' }]] as const) {
+        node.events.push({ type, data, seq: node.events.length })
+      }
+    }
     extraSessions.set(node.id, node)
     return node
   }
   const runAs = (agent: any, command: string, next: any, name = 'bash', args: any = {}) => run(command, next, name, args, { session: agent })
-  return { ctx, session, append, update, get, run, runAs, child, unbind: () => { live = undefined },
+  const detach = (node: any) => extraSessions.delete(node.id)
+  const cold = (node: any) => coldSessions.set(node.id, node)
+  const get = (id = session.id) => ctx.bashGuard.get(id)
+  return { ctx, session, append, update, get, run, runAs, child, detach, cold, unbind: () => { live = undefined },
     counts: () => ({ puts, selections }), delayPut: (fn: () => Promise<void>) => { beforePut = fn } }
 }
 
@@ -74,7 +85,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     if(field==='sandbox') h.ctx.sandboxPolicy.resolve=()=>({mode:'workspace-write'})
     else h.ctx.approval.effectivePolicy=()=> 'ask'
     await expect(h.update({action:'activate',revision:0})).rejects.toThrow('effective approval=never')
-    expect(h.get().active).toBe(false)
+    expect(await (await h.get()).active).toBe(false)
     expect(h.ctx.permissionPresets.current(h.session)).toBe('workspace-write')
   })
   it('publishes a real Cordis Remote get/update pair, without any commands dependency', async () => {
@@ -89,7 +100,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     expect(Object.getOwnPropertyDescriptor(Object.getPrototypeOf(h.ctx.bashGuard), '@deepseek-ai/dsh-typert-protocol/remote-methods')?.value).toMatchObject({
       version: 1, methods: ['get', 'update', 'getSettings', 'saveSettings', 'testSettings'].map(method => ({ method })),
     })
-    expect(h.get()).toMatchObject({ active: false, revision: 0 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 0 })
     expect(h.counts()).toEqual({ puts: 0, selections: 0 })
   })
   it('is inactive by default; activation pins full-access baseline and enforces guard', async () => {
@@ -110,20 +121,20 @@ describe('plugin Remote service, persistence and native baseline', () => {
     await h.update({ action: 'mode', mode: '4444', revision: 1 })
     const reopened = await mount(records)
     reopened.session.events.push(...h.session.events)
-    expect(reopened.get()).toMatchObject({ mode: '4444', active: true, revision: 2 })
+    expect((await reopened.get())).toMatchObject({ mode: '4444', active: true, revision: 2 })
     reopened.append('permission/preset', { preset: 'read-only' })
-    expect(reopened.get()).toMatchObject({ mode: '4444', active: false, revision: 3 })
-    expect(reopened.get()).toMatchObject({ revision: 3 })
+    expect((await reopened.get())).toMatchObject({ mode: '4444', active: false, revision: 3 })
+    expect((await reopened.get())).toMatchObject({ revision: 3 })
     expect(reopened.counts().puts).toBe(0)
     await expect(reopened.update({ action: 'activate', revision: 2 })).rejects.toThrow('changed')
     await reopened.update({ action: 'activate', revision: 3 })
-    expect(reopened.get()).toMatchObject({ mode: '4444', active: true, revision: 4 })
+    expect((await reopened.get())).toMatchObject({ mode: '4444', active: true, revision: 4 })
   })
   it.each(['sandbox/mode', 'approval/policy'])('invalidates after native %s changes', async (type) => {
     const h = await mount()
     await h.update({ action: 'activate', revision: 0 })
     h.append(type, { mode: 'danger-full-access', policy: 'never' })
-    expect(h.get()).toMatchObject({ active: false, revision: 2 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 2 })
     await expect(h.update({ action: 'mode', mode: '7777', revision: 1 })).rejects.toThrow('changed')
   })
   it('invalidates on successful same-preset native command too', async () => {
@@ -131,7 +142,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     await h.update({ action: 'activate', revision: 0 })
     h.append('command/run', { name: 'permission', args: 'danger-full-access', commandId: 'native' })
     h.append('command/done', { kind: 'success', commandId: 'native' })
-    expect(h.get()).toMatchObject({ active: false, revision: 2 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 2 })
   })
   it('rejects stale and invalid writes and isolates session IDs', async () => {
     const h = await mount()
@@ -139,23 +150,23 @@ describe('plugin Remote service, persistence and native baseline', () => {
     await expect(h.update({ action: 'mode', mode: '7777', revision: 0 })).rejects.toThrow('changed')
     await expect(h.update({ action: 'mode', mode: '8888', revision: 1 })).rejects.toThrow('four octal')
     await expect(h.update({ action: 'get', revision: 1 })).rejects.toThrow('Unknown')
-    expect(h.get()).toMatchObject({ mode: '4667', revision: 1 })
-    expect(h.ctx.bashGuard.get('other-session')).toMatchObject({ active: false, revision: 0 })
+    expect(await h.get()).toMatchObject({ mode: '4667', revision: 1 })
+    expect((await h.ctx.bashGuard.get('other-session'))).toMatchObject({ active: false, revision: 0 })
     expect(() => recordSchema.parse({ mode: 467 })).toThrow()
   })
   it('never resumes/acquires writers when polling; cold mutation refuses rather than stealing a binding', async () => {
     const h = await mount()
     await h.update({ action: 'activate', revision: 0 })
     h.unbind()
-    expect(h.get()).toMatchObject({ mode: '4667', active: false })
-    await expect(h.update({ action: 'deactivate', revision: h.get().revision })).rejects.toThrow('not live')
+    expect(await h.get()).toMatchObject({ mode: '4667', active: false })
+    await expect(h.update({ action: 'deactivate', revision: await (await h.get()).revision })).rejects.toThrow('not live')
     expect(h.counts()).toEqual({ puts: 1, selections: 1 })
   })
   it('invalidates legacy workspace-write records on read without elevating or writing', async () => {
     const records = new Map([['test-session', { mode: '4444', active: true, revision: 5, presetSeq: -1 }]])
     const h = await mount(records)
-    expect(h.get()).toMatchObject({ active: false, mode: '4444', revision: 6 })
-    expect(h.get().revision).toBe(6)
+    expect(await h.get()).toMatchObject({ active: false, mode: '4444', revision: 6 })
+    expect(await (await h.get()).revision).toBe(6)
     expect(h.counts()).toEqual({ puts: 0, selections: 0 })
     expect(h.session.events).toEqual([])
     await expect(h.update({ action: 'mode', mode: '7777', revision: 5 })).rejects.toThrow('changed')
@@ -165,7 +176,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     const h = await mount()
     await h.update({ action: 'activate', revision: 0 })
     h.ctx.permissionPresets.current = () => 'custom'
-    expect(h.get()).toMatchObject({ active: false, revision: 2 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 2 })
     expect(h.counts()).toEqual({ puts: 1, selections: 1 })
   })
   it('validates the full-access sandbox before making native changes', async () => {
@@ -186,7 +197,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     h.delayPut(async () => { throw new Error('disk full') })
     await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('disk full')
     expect(h.ctx.permissionPresets.current(h.session)).toBe('read-only')
-    expect(h.get()).toMatchObject({ active: false, revision: 0 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 0 })
     expect(h.counts()).toEqual({ puts: 0, selections: 2 })
     h.delayPut(async () => {})
     expect(await h.update({ action: 'activate', revision: 0 })).toMatchObject({ active: true, revision: 1 })
@@ -200,7 +211,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     }
     h.delayPut(async () => { throw new Error('disk full') })
     await expect(h.update({ action: 'activate', revision: 0 })).rejects.toThrow('full access may remain enabled')
-    expect(h.get()).toMatchObject({ active: false, revision: 0 })
+    expect(await h.get()).toMatchObject({ active: false, revision: 0 })
   })
   it('rolls back when setting the full-access baseline fails partway through', async () => {
     const h = await mount()
@@ -266,7 +277,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
     await started
     let executed = false
     const execution = h.run('cat /etc/hosts', async () => { executed = true })
-    expect(h.get().mode).toBe('4444')
+    expect(await (await h.get()).mode).toBe('4444')
     release(); await update
     expect((await execution).isError).toBe(true)
     expect(executed).toBe(false)
@@ -315,7 +326,7 @@ describe('Jev settings RPC and opt-in engine', () => {
     await h.ctx.bashGuard.saveSettings({ ...h.ctx.bashGuard.getSettings(), apiKey: '' })
     const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
     expect(await h.run('pwd', async () => 'ok')).toBe('ok')
-    expect(h.get().decision).toEqual({ source: 'local', fallback: true, allowed: true })
+    expect(await (await h.get()).decision).toEqual({ source: 'local', fallback: true, allowed: true })
     expect(fetchMock).not.toHaveBeenCalled()
   })
   it('serializes concurrent settings writes and keeps only the matching revision', async () => {
@@ -351,7 +362,7 @@ describe('Jev tool middleware decisions and race safety', () => {
     const fetchMock = vi.fn(async () => response()); vi.stubGlobal('fetch', fetchMock)
     const downstream = { isError: true, error: { message: 'downstream denied' } }
     expect(await h.run('PYTHONDONTWRITEBYTECODE=1 pytest; result=$?; exit $result', async () => downstream)).toBe(downstream)
-    expect(h.get().decision).toEqual({ source: 'jev', fallback: false, allowed: true })
+    expect(await (await h.get()).decision).toEqual({ source: 'jev', fallback: false, allowed: true })
   })
   it('does not send a queued operation after switching back to local', async () => {
     const h = await mount(); await jev(h)
@@ -380,7 +391,7 @@ describe('Jev tool middleware decisions and race safety', () => {
     expect(await h.run('touch /etc/test', async () => 'ran')).toBe('ran')
     expect(await h.run('curl --token SECRET_VALUE https://example.com', async () => 'ran2')).toBe('ran2')
     expect(fetchMock).not.toHaveBeenCalled()
-    expect(h.get().decision).toBeUndefined()
+    expect(await (await h.get()).decision).toBeUndefined()
   })
   it('credential values are redacted to **** before sending to Jev', async () => {
     const h = await mount(); await jev(h)
@@ -407,7 +418,7 @@ describe('Jev tool middleware decisions and race safety', () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fake-test-key leaked upstream') }))
     const next = vi.fn(async () => 'executed')
     const result = await h.run(command, next)
-    expect(h.get().decision).toEqual({ source: 'local', fallback: true, allowed: command === 'pwd' })
+    expect(await (await h.get()).decision).toEqual({ source: 'local', fallback: true, allowed: command === 'pwd' })
     expect(JSON.stringify(result)).not.toContain('fake-test-key')
     expect(next).toHaveBeenCalledTimes(command === 'pwd' ? 1 : 0)
   })
@@ -429,7 +440,7 @@ describe('Jev tool middleware decisions and race safety', () => {
 })
 
 describe('subagent guard inheritance', () => {
-  it('child sessions inherit the nearest active parent guard read-only', async () => {
+  it('child sessions materialize the parent guard at first use', async () => {
     const h = await mount()
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
     expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toBe('ran')
@@ -437,13 +448,15 @@ describe('subagent guard inheritance', () => {
     expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toMatchObject({ isError: true })
     expect(await h.runAs(child, 'pwd', async () => 'ok')).toBe('ok')
   })
-  it('inheritance never persists a child record and follows mode changes', async () => {
+  it('materialized child config is independent: parent changes do not propagate', async () => {
     const h = await mount()
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
     await h.update({ action: 'activate', revision: 0 })
+    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toMatchObject({ isError: true })
     await h.update({ action: 'mode', mode: '7777', revision: 1 })
-    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toBe('ran')
-    expect(h.counts().puts).toBe(2)
+    expect(await h.runAs(child, 'touch /etc/test', async () => 'ran')).toMatchObject({ isError: true })
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true })
+    expect(h.counts().puts).toBe(3)
   })
   it('walks grandparent chains and loses inheritance when the chain breaks', async () => {
     const h = await mount()
@@ -454,26 +467,39 @@ describe('subagent guard inheritance', () => {
     const orphan = h.child({ id: 'orphan', header: { parentSession: 'gone', origin: 'subagent' } })
     expect(await h.runAs(orphan, 'touch /etc/test', async () => 'ran')).toBe('ran')
   })
-  it('the child menu reflects the inherited guard and rejects child edits', async () => {
+  it('the child owns a materialized copy and can edit it independently', async () => {
     const h = await mount()
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
     await h.update({ action: 'activate', revision: 0 })
-    expect(h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, engine: 'local' })
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, engine: 'local', inherited: true })
+    await h.ctx.bashGuard.update('child-session', { action: 'mode', mode: '0000', revision: 0 })
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '0000', active: true })
     await h.update({ action: 'mode', mode: '7777', revision: 1 })
-    expect(h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '7777', active: true })
-    await expect(h.ctx.bashGuard.update('child-session', { action: 'mode', mode: '0000', revision: 1 })).rejects.toThrow()
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '0000', active: true })
   })
-  it('denies child Jev operations when the inherited parent policy changes mid-flight', async () => {
+  it('ended subagents still display the inherited guard via cold resolution', async () => {
+    const h = await mount()
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    await h.update({ action: 'activate', revision: 0 })
+    h.detach(child); h.cold(child)
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, inherited: true })
+  })
+  it('materializes the child config at first use; parent changes do not propagate', async () => {
     const h = await mount(); await jev(h)
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
-    let release!: (value: Response) => void, entered!: () => void
-    const started = new Promise<void>(resolve => { entered = resolve })
-    vi.stubGlobal('fetch', vi.fn(() => { entered(); return new Promise<Response>(resolve => { release = resolve }) }))
-    const result = h.runAs(child, 'touch /etc/test', vi.fn())
-    await started
-    await h.update({ action: 'mode', mode: '0000', revision: 2 })
-    release(response())
-    expect((await result).error.message).toContain('changed during evaluation')
+    const fetchMock = vi.fn(async () => response({ 'system.write': 0.9 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const next = vi.fn(async () => 'ran')
+    const first = await h.runAs(child, 'pwd', next)
+    expect(first.isError).toBe(true)
+    expect(first.error.message).toContain('required=2000')
+    await h.update({ action: 'mode', mode: '7777', revision: 2 })
+    const second = await h.runAs(child, 'touch /etc/test', next)
+    expect(second.isError).toBe(true)
+    expect(second.error.message).toContain('source=jev')
+    expect(second.error.message).toContain('required=2000')
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, engine: 'jev' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -489,7 +515,7 @@ describe('audit log', () => {
     await h.run('touch /etc/test', async () => 'ran')
     let lines = readLines(denyLog)
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatchObject({ tool: 'bash', command: 'touch /etc/test', mode: '4667', engine: 'local', localRequired: '6000', jevRequired: null, allowed: false, source: 'local', inherited: false })
+    expect(lines[0]).toMatchObject({ tool: 'bash', command: 'touch /etc/test', mode: '4667', engine: 'local', localRequired: '6000', jevRequired: null, allowed: false, source: 'local', materialized: false })
     const h2 = await mount(undefined, undefined, { audit: 'all', auditLog: allLog })
     await h2.update({ action: 'activate', revision: 0 })
     await h2.run('pwd', async () => 'ok')

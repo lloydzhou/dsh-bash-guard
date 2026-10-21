@@ -5,9 +5,9 @@ const scopes = ['system', 'external', 'network', 'workspace']
 const permissions = [{ key: 'read', bit: 4 }, { key: 'write', bit: 2 }, { key: 'execute', bit: 1 }]
 export function createGuardEditor(React, CheckIcon) {
   const h = React.createElement
-  return function GuardEditor({ mode, active, pending = false, locked = false, error, engine = 'local', decision, onEngineChange, onSettings, onChange, onModeChange, t = defaultT }) {
+  return function GuardEditor({ mode, active, pending = false, locked = false, inherited = false, error, engine = 'local', decision, onEngineChange, onSettings, onChange, onModeChange, t = defaultT }) {
     if (!active) return null
-    const disabled = pending || locked
+    const disabled = pending || locked || inherited
     const keydown = (event, row, col) => {
       const delta = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[event.key]
       if (!delta) return
@@ -49,6 +49,7 @@ export function createGuardEditor(React, CheckIcon) {
           h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
             h('path', { d: 'm10 3-.6 2.1-2 .9-2-.5-2 3.5 1.5 1.6v2.8L3.4 15l2 3.5 2-.5 2 .9.6 2.1h4l.6-2.1 2-.9 2 .5 2-3.5-1.5-1.6v-2.8L20.6 9l-2-3.5-2 .5-2-.9L14 3Z' }), h('circle', { cx: 12, cy: 12, r: 3 })))),
       decision?.fallback && h('div', { className: 'dsh-bg-fallback', role: 'status' }, t('engine.fallback')),
+      inherited && h('div', { className: 'dsh-bg-fallback', role: 'status' }, t('guard.inheritedHint')),
       error ? h('div', { className: 'dsh-bg-error', role: 'alert' }, error) : null)
   }
 }

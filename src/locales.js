@@ -2,6 +2,7 @@
 export const BASH_GUARD_NS = 'bash-guard'
 export const zh = {
   'engine.label': '判断方式', 'engine.local': '本地', 'engine.fallback': '最近一次判断已回退到本地规则',
+  'guard.inheritedHint': '继承自父会话的配置——请在父会话修改',
   'settings.title': 'Bash Guard 设置', 'settings.scope': 'Jev 配置由当前 profile 的会话共用；判断方式仅对当前会话生效。',
   'settings.model': '模型', 'settings.apiKey': 'API 密钥', 'settings.keyConfigured': '已配置 · 留空保留原密钥', 'settings.keyMissing': '输入 API 密钥',
   'settings.keyNote': '密钥不会回显。密钥以明文保存在本机配置档案中，并非加密保险库。',
@@ -57,6 +58,7 @@ export const zh = {
 }
 export const en = {
   'engine.label': 'Review method', 'engine.local': 'Local', 'engine.fallback': 'The last review fell back to local rules',
+  'guard.inheritedHint': 'Inherited from the parent session — change it there',
   'settings.title': 'Bash Guard settings', 'settings.scope': 'Configuration is shared across this profile. The review method applies only to this session.',
   'settings.model': 'Model', 'settings.apiKey': 'API key', 'settings.keyConfigured': 'Configured · leave blank to keep', 'settings.keyMissing': 'Enter an API key',
   'settings.keyNote': 'Stored keys are never displayed. The key is saved as plaintext in your local profile, not an encrypted vault.',

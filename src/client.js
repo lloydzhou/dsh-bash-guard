@@ -24,6 +24,7 @@ export function decodeGuardState(reply, t = defaultT) {
   const decision = state.decision
   if (decision !== undefined && (!decision || !['local', 'jev'].includes(decision.source) || typeof decision.fallback !== 'boolean' || typeof decision.allowed !== 'boolean')) throw localeError(t, 'error.invalidState')
   return { mode: state.mode, active: state.active, revision: state.revision, engine,
+    ...(state.inherited === true ? { inherited: true } : {}),
     ...(decision === undefined ? {} : { decision: { source: decision.source, fallback: decision.fallback, allowed: decision.allowed } }) }
 }
 
@@ -258,7 +259,7 @@ export function createPermissionControl(React, primitives) {
         }, icon(current) && h('span', { className: 'dsh-bg-trigger-icon', 'aria-hidden': true }, icon(current)),
         h('span', { className: 'dsh-bg-trigger-label' }, label), current === 'auto' && h('sup', { className: 'dsh-bg-badge' }, t('auto.badge')),
         h('span', { className: `dsh-bg-chevron${open ? ' dsh-bg-chevron-open' : ''}`, 'aria-hidden': true }, h(IconChevronDownOutlineRegular))),
-      }, state && h(GuardEditor, { mode: state.mode, active: state.active, engine: state.engine, decision: state.decision, pending, locked, t,
+      }, state && h(GuardEditor, { mode: state.mode, active: state.active, engine: state.engine, decision: state.decision, pending, locked, inherited: state.inherited === true, t,
         onEngineChange: chooseEngine, onSettings: () => showSettings(false),
         onModeChange: mode => submit('mode', mode),
         onChange: (row, digit) => submit('mode', stateRef.current.mode.slice(0, row) + digit + stateRef.current.mode.slice(row + 1)),
