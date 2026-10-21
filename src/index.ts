@@ -86,9 +86,20 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     // unbound session cannot establish that its saved baseline still applies.
     if (!session) return state.active ? { ...state, active: false, revision: state.revision + 1 } : state
     const boundary = presetBoundary(session)
-    return state.active && (boundary > state.presetSeq || !baselineEffective(session))
-      ? { ...state, active: false, revision: state.revision + 1, presetSeq: boundary }
-      : state
+    if (state.active && (boundary > state.presetSeq || !baselineEffective(session))) {
+      // Diagnostic: an active guard silently deactivating is confusing — the
+      // audit says exactly why it happened and on which session.
+      if (auditLevel === 'all') {
+        writeAudit({
+          sessionId: id, diagnostic: 'guard-auto-deactivated', tool: 'guard',
+          reason: boundary > state.presetSeq ? 'permission-events-after-activation' : 'native-baseline-changed',
+          mode: state.mode, engine: state.engine, boundary, presetSeq: state.presetSeq,
+          allowed: false, source: 'diagnostic',
+        })
+      }
+      return { ...state, active: false, revision: state.revision + 1, presetSeq: boundary }
+    }
+    return state
   }
   const serialized = <T>(id: string, action: () => Promise<T>): Promise<T> => {
     const pending = (queues.get(id) ?? Promise.resolve()).catch(() => {}).then(action)
@@ -228,7 +239,7 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       // Diagnostic for delegated children: shows what the runtime header
       // actually carries so a silent inheritance miss is observable. No
       // command text is recorded.
-      if (session.header?.origin === 'subagent' && auditLevel !== 'off') {
+      if (session.header?.origin === 'subagent' && auditLevel === 'all') {
         writeAudit({
           sessionId: session.id, diagnostic: 'subagent-unguarded', tool: exec.name,
           origin: session.header.origin ?? null, parentSession: session.header.parentSession ?? null,
@@ -302,7 +313,7 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       if (raceChanged) {
         decision = { ...decision, allowed: false }
         decisions.set(session.id, decision)
-        if (auditLevel !== 'off') {
+        if (auditLevel === 'all') {
           writeAudit({
             sessionId: session.id, inherited: !!inherited, tool: exec.name, command: auditCommand(),
             cwd: workspace, mode: state.mode, engine: state.engine, localRequired: required,
