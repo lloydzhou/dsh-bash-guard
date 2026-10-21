@@ -124,6 +124,13 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
     expect(command('echo "pre $(cmd)"')).toBe('7777')
     expect(command('echo `x`')).toBe('7777')
   })
+  it('treats a leading cd as deterministic but still guards cds after other segments', () => {
+    expect(command('cd /tmp/x && echo hi')).toBe('0004')
+    expect(command('cd /private/tmp/x && uv run pytest', )).toBe('0005')
+    expect(command('npm run build && cd dist && serve')).toBe('7777')
+    expect(command('cd a; cd b')).toBe('7777')
+    expect(command('cat /private/tmp/x')).toBe('0004')
+  })
   it('uses bash workdir without turning an external directory into the workspace', () => {
     expect(tool('bash', { command: 'cat README.md', workdir: '/Users/other' })).toBe('0400')
     expect(tool('bash', { command: 'cat README.md', workdir: 'src' })).toBe('0004')

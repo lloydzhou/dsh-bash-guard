@@ -326,6 +326,9 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     // Both engines report the same artifact: a required-mode number that the
     // shared bit comparison evaluated against the configured mode.
     const detail = decision.fallback ? ', fallback=local' : decision.source === 'jev' ? ', decision=deny' : ''
-    return denied(`command blocked by bash safety policy (source=${decision.source}${detail}; required=${finalRequired} allowed=${state.mode}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
+    // required=7777 from the local scanner means "could not analyze", not
+    // "needs every bit" — say so instead of implying imaginary capabilities.
+    const unresolved = finalRequired === '7777' && decision.source === 'local' ? ', unresolved=true' : ''
+    return denied(`command blocked by bash safety policy (source=${decision.source}${detail}; required=${finalRequired} allowed=${state.mode}${unresolved}; mode=system/external/network/workspace bits=4:read,2:write,1:execute). Adjust Bash Guard in the permission menu; do not bypass this policy.`)
   })
 }

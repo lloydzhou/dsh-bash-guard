@@ -51,7 +51,8 @@ function pathMask(value: string, permissions: number, ctx: ResolvedContext): num
   const original = value
   value = value.replace(/^~(?=\/|$)|^\$(?:HOME|\{HOME\})(?=\/|$)/, ctx.home || '$UNKNOWN_HOME')
   if (/[\x00\r\n]/.test(value) || /\$|`|~/.test(value)) return bit('system', permissions) | bit('external', permissions) | bit('network', permissions) | bit('workspace', permissions)
-  const trusted = ['/tmp', ...(ctx.home ? [path.join(ctx.home, '.bash-agent/projects')] : [])]
+  // /private/tmp is the real path of /tmp on macOS and equally trusted.
+  const trusted = ['/tmp', '/private/tmp', ...(ctx.home ? [path.join(ctx.home, '.bash-agent/projects')] : [])]
   // Check BEFORE normalization: /tmp/../etc is explicitly never trusted.
   if (trusted.some(root => within(value, root)) && value.split('/').includes('..')) return bit('system', permissions)
   const resolved = path.resolve(ctx.cwd, value)
@@ -164,10 +165,23 @@ export function classifyCommand(command: string, input?: ContextInput): Requirem
   const { literal, expansible } = quoteStrip(command)
   // Do not pretend to expand arbitrary shell code, variables, or process substitution.
   if (/\$\(|`|[<>]\(|<<|\$\{|\$(?!HOME(?:\W|$))[A-Za-z_]/.test(expansible)) return '7777'
-  // Branch-dependent cwd and shell control flow cannot be resolved by this scanner.
-  if (/\b(?:if|then|else|elif|fi|for|while|until|case|esac|function)\b|[{}]/.test(literal) || /\bcd\b/.test(literal) && /\|\||(?:^|[^&])&(?:[^&]|$)|[()]/.test(literal)) return '7777'
+  // Branch-dependent shell control flow cannot be resolved by this scanner.
+  if (/\b(?:if|then|else|elif|fi|for|while|until|case|esac|function)\b|[{}]/.test(literal)) return '7777'
   const tokens = tokenize(command)
   if (!tokens) return '7777'
+  // cd only pins the cwd reliably when it leads the chain: a cd that runs
+  // after another segment may never execute (&&/||), making later cwd
+  // unknowable. A leading cd is deterministic and tracked segment by segment.
+  {
+    let segmentIndex = 0
+    for (const token of tokens) {
+      if (token.operator) {
+        if (/[;&|()]/.test(token.text)) segmentIndex += 1
+        continue
+      }
+      if (token.text === 'cd' && segmentIndex > 0) return '7777'
+    }
+  }
   let mask = 0
   let segment: Token[] = []
   let networkSeen = false, networkExecution = false
