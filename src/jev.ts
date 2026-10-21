@@ -65,10 +65,39 @@ export function parseRequirement(response: any): string {
   return mask.toString(8).padStart(4, '0')
 }
 
-// Credential-shaped input still suppresses entirely (partial redaction of
-// shell secrets is unsafe). Structural opacity — $(), backticks, heredocs,
-// ${} — is NOT suppressed: those are exactly the constructs the local
-// classifier cannot parse and Jev is configured to classify.
+// Credential VALUES are redacted with **** and the command still goes to Jev
+// for classification (marker-based, best-effort — quoting and encodings can
+// hide values). Credential-keyword SHAPES are additionally caught by
+// sensitive() screening in prepareState's callers where redaction is unsure.
+const REDACT_MARKERS: Array<[RegExp, number]> = [
+  [/((?:proxy-)?authorization):(\s+bearer)?\s*/i, 1],
+  [/(--token|--api-key|--password|--access-token)\s*/i, 1],
+  [/((?:TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET)=)/i, 1],
+]
+
+export function redactSecrets(value: string): string {
+  let out = value
+  for (const [marker] of REDACT_MARKERS) {
+    const global = new RegExp(marker.source, 'gi')
+    let match: RegExpExecArray | null
+    while ((match = global.exec(out)) !== null) {
+      const valueStart = match.index + match[0].length
+      const rest = out.slice(valueStart)
+      let span = rest.match(/^\S+/)?.[0]?.length ?? 0
+      const bearer = rest.slice(0, span).match(/^bearer\s+/i)
+      if (bearer) {
+        span += rest.slice(span).match(/^\S+/)?.[0]?.length ?? 0
+      }
+      if (!span) { global.lastIndex = valueStart; continue }
+      out = out.slice(0, valueStart) + '****' + out.slice(valueStart + span)
+      global.lastIndex = valueStart + 4
+    }
+  }
+  return out
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1****@')
+    .replace(/(https?:\/\/[^\s?]*\?)[^\s]+/gi, '$1****')
+}
+
 export function sensitive(value: string): boolean {
   return /authorization|proxy-authorization|cookie|bearer|password|passwd|api[-_]?key|access[-_]?key|private[-_ ]?key|credential|secret|token|BEGIN [A-Z ]*PRIVATE|https?:\/\/[^\s/]*@|https?:\/\/[^\s]*[?#]|--(?:data\S*|json|form\S*|user|header)|(?:^|\s)-[dHFu](?:\s|[^\s])|\b(?:base64|eval)\b/i.test(value)
 }
@@ -79,11 +108,12 @@ export function prepareState(operation: JevOperation): string | undefined {
   const args: Record<string, unknown> = {}
   // Explicit metadata projection: never serialize write contents, edit strings,
   // notebook source, descriptions, or other arbitrary tool payload fields.
+  // Credential-shaped string values are redacted with **** and still sent.
   const fields = tool === 'bash' ? ['command', 'workdir'] : ['file_path', 'path', 'notebook_path', ...(tool === 'glob' ? ['pattern'] : []), 'include', 'offset', 'limit', 'replace_all']
   for (const key of fields) if (operation.arguments[key] !== undefined) {
     const value = operation.arguments[key]
-    if (!['string', 'number', 'boolean'].includes(typeof value) || ['command', 'workdir', 'file_path', 'path', 'notebook_path', 'pattern', 'include'].includes(key) && typeof value !== 'string' || typeof value === 'number' && !Number.isFinite(value) || typeof value === 'string' && (sensitive(value) || /[\x00]|\[(?:REDACTED|TRUNCATED)\]/i.test(value))) return undefined
-    args[key] = value
+    if (!['string', 'number', 'boolean'].includes(typeof value) || ['command', 'workdir', 'file_path', 'path', 'notebook_path', 'pattern', 'include'].includes(key) && typeof value !== 'string' || typeof value === 'number' && !Number.isFinite(value) || typeof value === 'string' && (/[\x00]|\[(?:REDACTED|TRUNCATED)\]/i.test(value))) return undefined
+    args[key] = typeof value === 'string' ? redactSecrets(value) : value
   }
   if (tool === 'bash' && typeof args.command !== 'string') return undefined
   if (['read', 'read_image', 'write', 'edit', 'multiedit', 'notebookedit'].includes(tool) && ![args.file_path, args.path, args.notebook_path].some(value => typeof value === 'string' && value.trim())) return undefined

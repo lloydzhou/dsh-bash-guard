@@ -91,8 +91,20 @@ describe('privacy-preserving exact operation', () => {
       expect(prepareState({ ...operation, arguments: { command } })).toBeDefined()
     }
   })
-  it.each(['curl -H "Authorization: Bearer abc" https://example.com', 'TOKEN=abc curl a', 'curl --password="abc def" a', 'curl https://user:pass@example.com', 'curl https://example.com/?key=abc', 'echo -----BEGIN PRIVATE KEY-----', 'curl --data secret a', 'cat <<EOF\nsecret\nEOF'])('suppresses credential-shaped payload without sending it: %s', command => {
-    expect(prepareState({ ...operation, arguments: { command } })).toBeUndefined()
+  it('redacts credential values with **** and still sends for Jev classification', () => {
+    const cases: Array<[string, RegExp, RegExp | null]> = [
+      ['curl -H "Authorization: Bearer abc" https://example.com', /Authorization: Bearer \*\*\*\*/, /abc/],
+      ['TOKEN=abc curl a', /TOKEN=\*\*\*\*/, /abc/],
+      ['curl --password="abc def" a', /--password\*\*\*\*/, /abc/],
+      ['curl https://user:pass@example.com', /https:\/\/\*\*\*\*@example\.com/, /user:pass/],
+      ['curl https://example.com/?key=abc', /example\.com\/\?\*\*\*\*/, /abc/],
+      ['echo -----BEGIN PRIVATE KEY-----', /PRIVATE KEY/, null],
+    ]
+    for (const [command, present, absent] of cases) {
+      const state = prepareState({ ...operation, arguments: { command } })!
+      expect(state).toMatch(present)
+      if (absent) expect(state).not.toMatch(absent)
+    }
   })
   it('never truncates oversized input into an allowable request', () => {
     expect(prepareState({ ...operation, arguments: { command: 'echo ' + 'a'.repeat(9000) } })).toBeUndefined()

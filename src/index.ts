@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, posix as path } from 'node:path'
 import { allows, classifyTool } from './classify.ts'
-import { DEFAULT_JEV_SETTINGS, evaluate, prepareState, publicSettings, sensitive, settingsSchema, testSettings, validateSettings, type JevSettings, type JevSettingsRequest, type PublicJevSettings } from './jev.ts'
+import { DEFAULT_JEV_SETTINGS, evaluate, prepareState, publicSettings, redactSecrets, settingsSchema, testSettings, validateSettings, type JevSettings, type JevSettingsRequest, type PublicJevSettings } from './jev.ts'
 
 export const name = 'bash-guard'
 export const inject = ['storageDomain', 'sessions', 'permissionPresets', 'sandboxPolicy', 'approval']
@@ -284,8 +284,9 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
     let suppressed = false
     let decision: GuardDecision = { source: 'local', fallback: false, allowed: localAllowed }
     const auditCommand = (): string | undefined =>
-      suppressed || typeof args.command === 'string' && sensitive(args.command) ? '[SUPPRESSED]'
-        : typeof args.command === 'string' ? args.command
+      // The audit mirrors exactly what was sent to Jev: redacted, not removed.
+      suppressed ? '[SUPPRESSED]'
+        : typeof args.command === 'string' ? redactSecrets(args.command)
         : [args.file_path, args.path, args.notebook_path].find(value => typeof value === 'string')
     if (state.engine === 'jev') {
       await settingsQueue
@@ -342,7 +343,7 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       // When Jev is configured but the input was suppressed, say so — a silent
       // "why didn't Jev judge this?" is exactly the confusion to avoid.
       const jevNote = state.engine === 'jev'
-        ? ' The configured Jev reviewer was not consulted: this command contains constructs that must not leave the machine.'
+        ? ' The configured Jev reviewer was not consulted: this input exceeds limits or is malformed.'
         : ''
       return denied(`command not classified by bash guard (unresolved=true; the lexical classifier cannot parse this command; allowed=${state.mode} unchanged).${jevNote} Rewrite it with constructs the classifier understands: no $() or backticks, no heredocs, no unquoted {} braces or if/for/while keywords; use explicit absolute paths and one simple command per step. Do not bypass this policy.`)
     }
