@@ -9,7 +9,7 @@ describe('real local HTTP CONNECT proxy',()=>{
   const target=createServer((req,res)=>{
    expect(req.headers.authorization).toBe('Bearer fake-local-key')
    res.setHeader('Content-Type','application/json')
-   res.end(JSON.stringify({answers:Object.fromEntries(['system','external','network','workspace'].flatMap(s=>['read','write','execute'].map(b=>[`${s}.${b}`,{type:'noul',noul:.1}])))}))
+   res.end(JSON.stringify({answers:Object.fromEntries(['system','external','network','workspace'].map(s=>[s,{type:'choice',choice:'none',probabilities:{none:0.99}}]))}))
   })
   let tunnels=0
   const proxy=createServer()

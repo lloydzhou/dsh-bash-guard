@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DEFAULT_JEV_SETTINGS, evaluate, noulAnswer, parseRequirement, prepareState, publicSettings, questionKeys, sensitive, settingsSchema, testSettings, validateSettings } from '../src/jev.ts'
+import { DEFAULT_JEV_SETTINGS, choiceAnswer, evaluate, parseRequirement, prepareState, publicSettings, sensitive, settingsSchema, testSettings, validateSettings } from '../src/jev.ts'
 
 const configured = { ...DEFAULT_JEV_SETTINGS, apiKey: 'fake-test-key' }
-const answer = (values: Record<string, number> = {}) => noulAnswer(values)
+const answer = (levels: Record<string, string> = {}) => choiceAnswer(levels)
 const operation = { tool: 'bash', workspace: '/workspace', cwd: '/workspace/sub', arguments: { command: 'ls ../' } }
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
@@ -41,21 +41,20 @@ describe('Jev configuration and strict response contract', () => {
   it.each([{ model: '' }, { model: 'with spaces' }, { timeoutMs: 99 }, { timeoutMs: 30001 }, { timeoutMs: 100.1 }, { apiKey: 'bad\nkey' }])('validates configuration %j', patch => {
     expect(() => validateSettings({ ...configured, ...patch })).toThrow()
   })
-  it('maps twelve calibrated nouls to the same four-digit requirement format', () => {
-    expect(questionKeys()).toHaveLength(12)
+  it('maps four per-scope choices to the same four-digit requirement format', () => {
     expect(parseRequirement(answer())).toBe('0000')
-    expect(parseRequirement(answer({ 'system.read': 0.9, 'system.write': 0.1, 'external.read': 0.9, 'external.write': 0.9, 'workspace.read': 0.9, 'workspace.write': 0.9, 'workspace.execute': 0.9 }))).toBe('4607')
-    expect(parseRequirement(answer({ 'system.execute': 0.5 }))).toBe('1000')
-    expect(parseRequirement(answer({ 'network.read': 0.49, 'network.write': 0.51 }))).toBe('0020')
+    expect(parseRequirement(answer({ system: 'read-write', external: 'read', workspace: 'read-write-execute' }))).toBe('6407')
+    expect(parseRequirement(answer({ system: 'execute' }))).toBe('1000')
+    expect(parseRequirement(answer({ network: 'write' }))).toBe('0020')
   })
   it.each([
     { answers: {} },
-    { answers: { 'system.read': { type: 'choice', choice: 'x', probabilities: { x: 1 } } } },
-    { answers: Object.fromEntries(questionKeys().slice(1).map(key => [key, { type: 'noul', noul: 0.5 }])) },
-    { answers: Object.fromEntries(questionKeys().map(key => [key, { type: 'noul', noul: key === 'system.read' ? 1.01 : 0.1 }])) },
-    { answers: Object.fromEntries(questionKeys().map(key => [key, { type: 'noul', noul: '0.5' }])) },
+    { answers: { system: { type: 'noul', noul: 0.5 } } },
+    { answers: { system: { type: 'choice', choice: 'galaxy', probabilities: { galaxy: 1 } } } },
+    { answers: { system: { type: 'choice', choice: 'read' } } },
+    { answers: { system: { type: 'choice', choice: 'read', probabilities: { read: 1.01 } } } },
     {},
-  ])('rejects invalid noul response %j', response => {
+  ])('rejects invalid choice response %j', response => {
     expect(() => parseRequirement(response)).toThrow('JEV_')
   })
 })
@@ -118,7 +117,7 @@ describe('privacy-preserving exact operation', () => {
 })
 
 describe('bounded Jev transport with no real network', () => {
-  it('sends twelve noul questions with redirects forbidden and bearer only in header', async () => {
+  it('sends four per-scope choice questions with redirects forbidden and bearer only in header', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify(answer())))
     vi.stubGlobal('fetch', fetchMock)
     const state = prepareState(operation)!
@@ -131,9 +130,10 @@ describe('bounded Jev transport with no real network', () => {
     const body = JSON.parse(init.body)
     expect(body.state).toBe(state)
     const questions = Object.values<any>(body.questions)
-    expect(questions).toHaveLength(12)
-    expect(questions.every((question: any) => question.type === 'noul')).toBe(true)
-    expect(body.questions['system.execute'].instructions).toContain('system scope')
+    expect(questions).toHaveLength(4)
+    expect(questions.every((question: any) => question.type === 'choice')).toBe(true)
+    expect(Object.keys(body.questions)).toEqual(['system', 'external', 'network', 'workspace'])
+    expect(body.questions.system.criteria['read-write-execute']).toBeTruthy()
     expect(init.body).not.toContain('fake-test-key')
   })
   it.each([() => { throw new Error('Bearer fake-test-key: https://private/') }, () => new Response('fake-test-key', { status: 500 }), () => new Response('not json fake-test-key'), () => new Response('{"answers":{"action":{"type":"noul","noul":0.9}}}'), () => new Response('x', { headers: { 'Content-Length': '999999' } }), () => new Response('x'.repeat(65537))])('sanitizes all network/body failures', async response => {
@@ -157,7 +157,7 @@ describe('bounded Jev transport with no real network', () => {
     await result
   })
   it('tests only fixed innocuous operation and returns configured model, not arbitrary response data', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ...noulAnswer(), model: 'secret echoed by server' })))
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ...choiceAnswer(), model: 'secret echoed by server' })))
     vi.stubGlobal('fetch', fetchMock)
     expect(await testSettings(configured)).toEqual({ ok: true, model: 'jev-latest' })
     const state = JSON.parse(JSON.parse((fetchMock.mock.calls[0] as any)[1].body).state)

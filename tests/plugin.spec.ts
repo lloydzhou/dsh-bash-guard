@@ -285,7 +285,7 @@ describe('plugin Remote service, persistence and native baseline', () => {
 })
 
 
-const response = (values: Record<string, number> = {}) => new Response(JSON.stringify({ answers: Object.fromEntries(['system', 'external', 'network', 'workspace'].flatMap(scope => ['read', 'write', 'execute'].map(bit => [`${scope}.${bit}`, { type: 'noul', noul: values[`${scope}.${bit}`] ?? 0.1 }]))) }))
+const response = (levels: Record<string, string> = {}) => new Response(JSON.stringify({ answers: Object.fromEntries(['system', 'external', 'network', 'workspace'].map(scope => [scope, { type: 'choice', choice: levels[scope] ?? 'none', probabilities: { [levels[scope] ?? 'none']: 0.99 } }])) }))
 async function jev(h: Awaited<ReturnType<typeof mount>>) {
   await h.ctx.bashGuard.saveSettings({ ...DEFAULT_JEV_SETTINGS, apiKey: 'fake-test-key', revision: 0 })
   await h.update({ action: 'activate', revision: 0 })
@@ -374,7 +374,7 @@ describe('Jev tool middleware decisions and race safety', () => {
   })
   it('reports Jev requirements with the same bit comparison as local', async () => {
     const h = await mount(); await jev(h)
-    vi.stubGlobal('fetch', vi.fn(async () => response({ 'system.read': 0.9, 'system.write': 0.9 })))
+    vi.stubGlobal('fetch', vi.fn(async () => response({ system: 'read-write' })))
     const next = vi.fn()
     const result = await h.run('pwd', next)
     expect(result.isError).toBe(true)
@@ -499,7 +499,7 @@ describe('subagent guard inheritance', () => {
   it('materializes the child config at first use; parent changes do not propagate', async () => {
     const h = await mount(); await jev(h)
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
-    const fetchMock = vi.fn(async () => response({ 'system.write': 0.9 }))
+    const fetchMock = vi.fn(async () => response({ system: 'write' }))
     vi.stubGlobal('fetch', fetchMock)
     const next = vi.fn(async () => 'ran')
     const first = await h.runAs(child, 'pwd', next)
@@ -557,7 +557,7 @@ describe('audit log', () => {
     await h.update({ action: 'engine', engine: 'jev', revision: 1 })
     vi.stubGlobal('fetch', vi.fn(async () => response()))
     expect(await h.run('curl --token SECRET_VALUE https://example.com', async () => 'ran')).toBe('ran')
-    vi.stubGlobal('fetch', vi.fn(async () => response({ 'system.write': 0.9 })))
+    vi.stubGlobal('fetch', vi.fn(async () => response({ system: 'write' })))
     await h.run('pwd', vi.fn())
     const lines = readLines(log)
     expect(lines[0]).toMatchObject({ command: 'curl --token **** https://example.com', source: 'jev', fallback: false, allowed: true, jevRequired: '0000' })
