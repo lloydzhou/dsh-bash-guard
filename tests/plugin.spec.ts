@@ -410,8 +410,9 @@ describe('Jev tool middleware decisions and race safety', () => {
     const state = JSON.parse(JSON.parse((fetchMock.mock.calls[0] as any)[1].body).state)
     expect(state.cwd).toBe('/Users/test/outside')
     expect(state.workspace_path).toBe('/Users/test/project')
-    await h.run('', async () => 'ok', 'write', { file_path: '/Users/test/outside/x', content: 'NEVER SEND FILE CONTENT' })
-    expect((fetchMock.mock.calls[1] as any)[1].body).not.toContain('NEVER SEND FILE CONTENT')
+    // File tools are local-only under the Jev engine: no request, no contents.
+    expect(await h.run('', async () => 'ok', 'write', { file_path: '/Users/test/outside/x', content: 'NEVER SEND FILE CONTENT' })).toBe('ok')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
   it.each(['pwd', 'touch /etc/test'])('API failure falls back local for %s and sanitizes errors', async command => {
     const h = await mount(); await jev(h)
@@ -436,6 +437,17 @@ describe('Jev tool middleware decisions and race safety', () => {
     release(response())
     expect((await result).error.message).toContain('changed during evaluation')
     expect(next).not.toHaveBeenCalled()
+  })
+  it('file tools follow local path rules even with the Jev engine', async () => {
+    const h = await mount(); await jev(h)
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock)
+    expect(await h.run('', async () => 'read-ok', 'read', { file_path: '/Users/test/project/src/a.jsx' })).toBe('read-ok')
+    expect(await h.run('', async () => 'edit-ok', 'edit', { file_path: '/Users/test/project/src/a.jsx', old_string: 'a', new_string: 'b' })).toBe('edit-ok')
+    const denied = await h.run('', async () => 'no', 'edit', { file_path: '/Users/other/secret.jsx', old_string: 'a', new_string: 'b' })
+    expect(denied.isError).toBe(true)
+    expect(denied.error.message).toContain('source=local')
+    expect(denied.error.message).toContain('required=2000')
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

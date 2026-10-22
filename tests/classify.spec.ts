@@ -146,6 +146,19 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
     expect(sessionCmd('cd /private/tmp/hymona-session-runtime-20261019/x && git worktree add ../sibling -b feat/session')).toBe('0007')
     expect(sessionCmd("cd /private/tmp/hymona-session-runtime-20261019/x && node --test tests/session-uploads.test.mjs")).toBe('0005')
   })
+  it('classifies real web-ai session reads and checks from the audit corpus', () => {
+    const webAi = {
+      cwd: '/private/tmp/web-ai-int',
+      workspace: '/private/tmp/web-ai-int',
+      home: '/Users/test',
+    }
+    expect(classifyCommand('sed -n 1,120p tests/chat-ai-stream-integration.test.mjs', webAi)).toBe('0004')
+    expect(classifyCommand('node --test tests/*.test.mjs 2>&1 | tail -20', webAi)).toBe('0001')
+    expect(classifyCommand('grep -l "space-y-4" dist/client/assets/*.css | head', webAi)).toBe('0004')
+    expect(classifyCommand('cd /private/tmp/web-ai-int && ls src/components tests | head -80', webAi)).toBe('0004')
+    expect(classifyCommand('cd /private/tmp/web-ai-int && node --test tests/*.test.mjs 2>&1 | tail -30', webAi)).toBe('0005')
+    expect(classifyCommand('cat vite.config.js 2>/dev/null || ls vite.config.*; grep -rn "ai-theme" vite.config.* src/*.css | head', webAi)).toBe('0004')
+  })
   it('treats dotdot paths resolving inside a trusted root as workspace', () => {
     const session = { cwd: '/private/tmp/h/x', workspace: '/private/tmp/h', home: '/Users/test' }
     expect(classifyCommand('cat ../sibling', session)).toBe('0004')

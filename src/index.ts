@@ -327,7 +327,11 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
       suppressed ? '[SUPPRESSED]'
         : typeof args.command === 'string' ? redactSecrets(args.command)
         : [args.file_path, args.path, args.notebook_path].find(value => typeof value === 'string')
-    if (state.engine === 'jev') {
+    // Jev classifies bash commands only: 4933 audit rows showed its answers
+    // for deterministic path-based file tools swing wildly (0000/6000/1005 for
+    // the same read), while the local path rules are exact for them.
+    const jevEligible = state.engine === 'jev' && exec.name.toLowerCase() === 'bash'
+    if (jevEligible) {
       await settingsQueue
       await queues.get(session.id)
       if (!policyStillCurrent()) {
