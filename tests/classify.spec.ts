@@ -165,6 +165,12 @@ describe('conservative shell accumulation (not an OS sandbox)', () => {
     expect(classifyCommand('../sibling', session)).toBe('0001')
     expect(classifyCommand('cat /tmp/../etc/hosts', session)).toBe('4000')
   })
+  it('treats process I/O devices as free', () => {
+    expect(command('cat foo > /dev/stdout')).toBe('0004')
+    expect(command('cat foo 2> /dev/stderr')).toBe('0004')
+    expect(command('make 2> /dev/null')).toBe('0001')
+    expect(command('echo hi > /dev/fd/1')).toBe('0004')
+  })
   it('uses bash workdir without turning an external directory into the workspace', () => {
     expect(tool('bash', { command: 'cat README.md', workdir: '/Users/other' })).toBe('0400')
     expect(tool('bash', { command: 'cat README.md', workdir: 'src' })).toBe('0004')

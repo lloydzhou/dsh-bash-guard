@@ -56,7 +56,9 @@ function pathMask(value: string, permissions: number, ctx: ResolvedContext): num
   // Check BEFORE normalization: /tmp/../etc is explicitly never trusted.
   if (trusted.some(root => within(value, root)) && value.split('/').includes('..')) return bit('system', permissions)
   const resolved = path.resolve(ctx.cwd, value)
-  if (resolved === '/dev/null') return 0
+  // Process I/O pseudo-devices: writing to the command's own streams touches
+  // nothing on the machine.
+  if (/^\/dev\/(?:null|std(?:out|err|in)|fd\/\d+)$/.test(resolved)) return 0
   if (within(resolved, '/dev/tcp') || within(resolved, '/dev/udp')) return bit('network', permissions)
   // '..' that resolves back INSIDE the trusted root is fine; true escapes land
   // on system/external paths and are classified by the checks below.
