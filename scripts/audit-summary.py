@@ -1,7 +1,11 @@
 import json
+import sys
 from collections import Counter
 
-rows = [json.loads(line) for line in open('/Users/lloyd/.dsh/bash-guard-audit.jsonl')]
+# 可选参数：日志路径（如备份文件），不传则用默认路径
+path = sys.argv[1] if len(sys.argv) > 1 else '/Users/lloyd/.dsh/bash-guard-audit.jsonl'
+print(f"日志：{path}")
+rows = [json.loads(line) for line in open(path)]
 print(f"总数 {len(rows)}")
 print("工具分布:", dict(Counter(r.get('tool') for r in rows)))
 print("结果分布:", dict(Counter(r.get('allowed') for r in rows)))
