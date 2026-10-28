@@ -496,6 +496,14 @@ describe('subagent guard inheritance', () => {
     h.detach(child); h.cold(child)
     expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, inherited: true })
   })
+  it('degrades gracefully when the host accessor throws (strict rc.3+ hosts)', async () => {
+    const h = await mount()
+    const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })
+    await h.update({ action: 'activate', revision: 0 })
+    h.detach(child); h.cold(child)
+    Object.defineProperty(h.ctx, 'sessionQuery', { configurable: true, get() { throw new Error('cannot get property "sessionQuery" without inject') } })
+    expect(await h.ctx.bashGuard.get('child-session')).toMatchObject({ mode: '4667', active: true, inherited: true })
+  })
   it('materializes the child config at first use; parent changes do not propagate', async () => {
     const h = await mount(); await jev(h)
     const child = h.child({ header: { parentSession: 'test-session', origin: 'subagent' } })

@@ -129,9 +129,15 @@ export async function apply(ctx: any, config: { mode?: string; audit?: 'deny' | 
   const headerOf = async (id: string): Promise<any | undefined> => {
     const live = ctx.sessions.get(id)
     if (live) return live.header
-    if (!ctx.sessionQuery?.observeSession) return undefined
+    // sessionQuery is NOT in our inject list by design: requiring it would
+    // block plugin load on hosts that drop the service. Resolution tries every
+    // known path and swallows host-side accessor errors (rc.3+ throws
+    // "cannot get property ... without inject" for undeclared accessors);
+    // total absence degrades to no cold display instead of an error.
+    const sessionQuery = [() => ctx.sessionQuery, () => ctx.get?.('sessionQuery'), () => ctx.reflect?.get?.('sessionQuery', false)].map(attempt => { try { const value = attempt(); return value?.observeSession ? value : undefined } catch { return undefined } }).find(Boolean)
+    if (!sessionQuery) return undefined
     try {
-      const observed = await ctx.sessionQuery.observeSession(id, { projectionMode: 'none' })
+      const observed = await sessionQuery.observeSession(id, { projectionMode: 'none' })
       return observed?.header
     } catch { return undefined }
   }
