@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Bash 守卫",
+    "title": "权限守卫",
     "description": "基于工作空间的 Bash 权限策略，使用原生权限菜单按范围控制读、写、执行"
   }
 }
