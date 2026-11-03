@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Bash Guard",
+    "title": "Permission Guard",
     "description": "Workspace-based Bash Guard policy with native inline permission controls"
   }
 }
