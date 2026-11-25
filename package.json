@@ -1,6 +1,6 @@
 {
   "name": "dsh-bash-guard",
-  "version": "0.2.4-rc.1",
+  "version": "0.2.4-rc.2",
   "license": "MIT",
   "author": "lloydzhou (https://github.com/lloydzhou)",
   "homepage": "https://github.com/lloydzhou/dsh-bash-guard#readme",
@@ -25,6 +25,7 @@
     ".": "./lib/index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
     "./package.json": "./package.json"
   },
   "files": [
@@ -33,7 +34,8 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
-    "SECURITY.md"
+    "SECURITY.md",
+    "icon.svg"
   ],
   "dsh": {
     "bundle": {
