@@ -1,4 +1,6 @@
-import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Service } from '@deepseek-ai/cordis'
+import * as typertProtocol from '@deepseek-ai/dsh-typert-protocol'
+import * as typertProtocolLegacy from '@deepseek-ai/dsh-typert-protocol-legacy'
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, posix as path } from 'node:path'
@@ -9,6 +11,18 @@ export const name = 'bash-guard'
 export const inject = ['storageDomain', 'sessions', 'permissionPresets', 'sandboxPolicy', 'approval']
 export const BASH_GUARD_DENIED = 'BASH_GUARD_DENIED'
 const BASELINE = 'danger-full-access'
+// The host's cordis generation decides which protocol release works: 0.2.3-alpha.2+
+// hosts run cordis 4.2, where the root context lives behind the global
+// Symbol.for('cordis.root') key and every cordis copy shares that symbol;
+// 0.2.1-rc.3..0.2.2.x hosts run cordis 4.0/4.1 with a plain ctx.root property.
+// Detection must run against the live ctx (this module's own cordis copy may be
+// an older version than the host's), so resolve lazily per construction.
+const CORDIS_ROOT = Symbol.for('cordis.root')
+let protocolModule: any
+function protocolFor(ctx: any): any {
+  if (!protocolModule) protocolModule = ctx?.[CORDIS_ROOT] ? typertProtocol : typertProtocolLegacy
+  return protocolModule
+}
 const valid = (value: unknown): value is string => typeof value === 'string' && /^[0-7]{4}$(?![\s\S])/.test(value)
 export interface GuardRecord { mode: string; active: boolean; revision: number; presetSeq: number; engine: 'local' | 'jev' }
 export interface GuardDecision { source: 'local' | 'jev'; fallback: boolean; allowed: boolean }
@@ -34,13 +48,17 @@ function presetBoundary(session: any): number {
 
 /** Standard Cordis service + source-mode Typert descriptors; the gateway supplies
  * the { ok, value } RPC envelope, not these methods. No session command transport. */
-export class BashGuardService extends TypertRemoteService {
+export class BashGuardService extends Service {
+  /** Visible binding consumed by the Gateway's source-mode discovery. */
+  typertRemote: any
   constructor(ctx: any, private readonly readState: (id: string) => GuardRecord & { decision?: GuardDecision }, private readonly mutate: (id: string, request: GuardUpdate) => Promise<GuardRecord>, private readonly settings: { get: () => PublicJevSettings; save: (request: JevSettingsRequest & { revision: number }) => Promise<PublicJevSettings>; test: (request: JevSettingsRequest) => Promise<{ ok: true; model: string }> }) {
     super(ctx, 'bashGuard')
+    const PROTOCOL = protocolFor(ctx)
+    this.typertRemote = PROTOCOL.bindTypertRemote(this, 'bashGuard')
     // Invoke the installed standard-decorator API explicitly so both the host
     // transpiler and source-mode test runners discover the same descriptors.
     for (const method of ['get', 'update', 'getSettings', 'saveSettings', 'testSettings'] as const) {
-      Remote(method)(this[method] as any, {
+      PROTOCOL.Remote(method)(this[method] as any, {
         kind: 'method', name: method, static: false, private: false,
         access: { has: (object: any) => method in object, get: (object: any) => object[method] },
         addInitializer: (initialize: (this: BashGuardService) => void) => initialize.call(this),
